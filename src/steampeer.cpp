@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "steam/steam_api.h"
+#include "steam/steam_gameserver.h"
 #include "steam/isteamnetworkingmessages.h"
 #include "steam/isteamnetworkingutils.h"
 
@@ -38,6 +39,9 @@ const char* kProtoVer = "1";
 const DWORD kConnectRetryMs = 1500, kConnectTimeoutMs = 20000, kPeerTimeoutMs = 25000, kPingMs = 1000;
 
 SteamSettings S;
+bool g_gs = false; // anonymous game-server mode active
+static ISteamNetworkingMessages* NM() { return g_gs ? SteamGameServerNetworkingMessages() : SteamNetworkingMessages(); }
+static void RunCB() { if (g_gs) SteamGameServer_RunCallbacks(); else SteamAPI_RunCallbacks(); }
 HCoCreate g_origCoCreate;
 
 // ---------------------------------------------------------------------------
@@ -268,7 +272,7 @@ class SteamService {
         int fl = (reliable ? k_nSteamNetworkingSend_ReliableNoNagle : k_nSteamNetworkingSend_UnreliableNoNagle) |
                  k_nSteamNetworkingSend_AutoRestartBrokenSession;
         Lock l(&sendCs);
-        EResult r = SteamNetworkingMessages()->SendMessageToUser(id, m.data(), (uint32)m.size(), fl, kChannel);
+        EResult r = NM()->SendMessageToUser(id, m.data(), (uint32)m.size(), fl, kChannel);
         return r == k_EResultOK;
     }
 
@@ -283,6 +287,8 @@ class SteamService {
     CCallResult<SteamService, LobbyCreated_t> crCreate;
     CCallResult<SteamService, LobbyEnter_t> crEnter;
     CCallResult<SteamService, LobbyMatchList_t> crList;
+    CCallback<SteamService, SteamNetworkingMessagesSessionRequest_t, true>* gsReq = nullptr;
+    CCallback<SteamService, SteamNetworkingMessagesSessionFailed_t, true>* gsFail = nullptr;
     void OnLobbyCreated(LobbyCreated_t* r, bool io);
     void OnLobbyEnter(LobbyEnter_t* r, bool io);
     void OnLobbyList(LobbyMatchList_t* r, bool io);
@@ -719,11 +725,15 @@ class SteamPeer : public IDirectPlay8Peer_ {
         }
         Log("steam: hosting \"%s\" (max %u players)", Narrow(desc.name).c_str(), (unsigned)desc.maxPlayers);
         DeliverCreate(me); // DirectPlay indicates the local host player before Host() returns
-        PostSession([this]() {
-            ELobbyType t = S.lobbyFriendsOnly ? k_ELobbyTypeFriendsOnly : k_ELobbyTypePublic;
-            SteamAPICall_t c = SteamMatchmaking()->CreateLobby(t, (int)desc.maxPlayers);
-            g_svc->crCreate.Set(c, g_svc, &SteamService::OnLobbyCreated);
-        });
+        if (!g_gs) {
+            PostSession([this]() {
+                ELobbyType t = S.lobbyFriendsOnly ? k_ELobbyTypeFriendsOnly : k_ELobbyTypePublic;
+                SteamAPICall_t c = SteamMatchmaking()->CreateLobby(t, (int)desc.maxPlayers);
+                g_svc->crCreate.Set(c, g_svc, &SteamService::OnLobbyCreated);
+            });
+        } else {
+            Log("steam: game server hosting - players join with SteamID %llu", (unsigned long long)g_svc->me);
+        }
         return S_OK;
     }
 
@@ -1119,7 +1129,7 @@ class SteamPeer : public IDirectPlay8Peer_ {
         ident.SetSteamID64(s);
         SteamNetConnectionRealTimeStatus_t q;
         memset(&q, 0, sizeof(q));
-        SteamNetworkingMessages()->GetSessionConnectionInfo(ident, nullptr, &q);
+        NM()->GetSessionConnectionInfo(ident, nullptr, &q);
         DWORD sz = info->dwSize ? info->dwSize : sizeof(*info);
         memset(info, 0, sz);
         info->dwSize = sz;
@@ -1604,7 +1614,7 @@ void SteamService::OnSessionRequest(SteamNetworkingMessagesSessionRequest_t* r) 
         Lock l(&cs);
         if (peer && (peer->st == St::Hosting || peer->FindSteam(s) || peer->hostSteam == s)) ok = true;
     }
-    if (ok) SteamNetworkingMessages()->AcceptSessionWithUser(r->m_identityRemote);
+    if (ok) NM()->AcceptSessionWithUser(r->m_identityRemote);
 }
 
 void SteamService::OnSessionFailed(SteamNetworkingMessagesSessionFailed_t* r) {
@@ -1696,14 +1706,14 @@ void SteamService::OnLobbyList(LobbyMatchList_t* r, bool io) {
 void SteamService::Run() {
     SteamNetworkingMessage_t* msgs[64];
     for (;;) {
-        SteamAPI_RunCallbacks();
+        RunCB();
         SteamPeer* p;
         {
             Lock l(&cs);
             p = peer;
         }
         for (;;) {
-            int n = SteamNetworkingMessages()->ReceiveMessagesOnChannel(kChannel, msgs, 64);
+            int n = NM()->ReceiveMessagesOnChannel(kChannel, msgs, 64);
             if (n <= 0) break;
             for (int i = 0; i < n; i++) {
                 if (p) p->OnMessage(msgs[i]->m_identityPeer.GetSteamID64(), (const uint8_t*)msgs[i]->m_pData, (size_t)msgs[i]->m_cbSize);
@@ -1748,6 +1758,47 @@ bool EnsureSteam() {
     sprintf(appId, "%u", S.appId);
     SetEnvironmentVariableA("SteamAppId", appId);
     SetEnvironmentVariableA("SteamGameId", appId);
+    if (S.gameServer) {
+        g_gs = true;
+        SteamErrMsg gerr = {0};
+        if (SteamGameServer_InitEx(0, 27031, STEAMGAMESERVER_QUERY_PORT_SHARED, eServerModeNoAuthentication,
+                                   "1.0.0.0", &gerr) != k_ESteamAPIInitResult_OK) {
+            Log("steam: game-server init failed (%s) - using DirectPlay", gerr);
+            g_gs = false;
+            return false;
+        }
+        SteamGameServer()->SetProduct("KnightShift");
+        SteamGameServer()->SetGameDescription("KnightShift RPG");
+        SteamGameServer()->SetModDir("KnightShift");
+        SteamGameServer()->SetDedicatedServer(true);
+        SteamGameServer()->SetServerName(S.serverName);
+        SteamGameServer()->SetMaxPlayerCount(8);
+        SteamGameServer()->LogOnAnonymous();
+        SteamNetworkingUtils()->InitRelayNetworkAccess();
+        ULONGLONG t0 = GetTickCount64();
+        while (!SteamGameServer()->BLoggedOn() && GetTickCount64() - t0 < 20000) {
+            SteamGameServer_RunCallbacks();
+            Sleep(50);
+        }
+        if (!SteamGameServer()->BLoggedOn()) {
+            Log("steam: anonymous game-server logon failed - is Steam / steamclient available? Using DirectPlay");
+            SteamGameServer_Shutdown();
+            g_gs = false;
+            return false;
+        }
+        g_svc = new SteamService();
+        g_svc->me = SteamGameServer()->GetSteamID().ConvertToUint64();
+        g_svc->myName = Widen(S.serverName);
+        g_svc->gsReq = new CCallback<SteamService, SteamNetworkingMessagesSessionRequest_t, true>(
+            g_svc, &SteamService::OnSessionRequest);
+        g_svc->gsFail = new CCallback<SteamService, SteamNetworkingMessagesSessionFailed_t, true>(
+            g_svc, &SteamService::OnSessionFailed);
+        CreateThread(nullptr, 0, SteamThread, nullptr, 0, nullptr);
+        Log("steam: anonymous game server ready, app id %u, SteamID %llu", S.appId, (unsigned long long)g_svc->me);
+        Log("steam: players join by entering this SteamID in the address field: %llu", (unsigned long long)g_svc->me);
+        g_steamOk = true;
+        return true;
+    }
     SteamErrMsg err = {0};
     ESteamAPIInitResult r = SteamAPI_InitEx(&err);
     if (r != k_ESteamAPIInitResult_OK) {

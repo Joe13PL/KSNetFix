@@ -8,6 +8,8 @@ struct SteamSettings {
     unsigned appId = 254060;       // KnightShift; 480 = Spacewar (Valve's Steamworks test app)
     bool lobbyFriendsOnly = false;
     bool verbose = false;
+    bool gameServer = false;       // anonymous Steam game server (no user account / Steam client)
+    char serverName[64] = "KnightShift RPG Server";
 };
 
 typedef HRESULT(__stdcall* HCoCreate)(REFCLSID, LPUNKNOWN, DWORD, REFIID, LPVOID*);

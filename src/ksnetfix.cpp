@@ -195,6 +195,9 @@ static void LoadConfig() {
     GetPrivateProfileStringA("Steam", "LobbyType", "public", lt, sizeof(lt), ini);
     cfg.steam.lobbyFriendsOnly = _stricmp(lt, "friends") == 0;
     cfg.steam.verbose          = GetPrivateProfileIntA("Steam", "Verbose", 0, ini) != 0;
+    cfg.steam.gameServer       = GetPrivateProfileIntA("Steam", "GameServer", 0, ini) != 0;
+    GetPrivateProfileStringA("Server", "SessionName", cfg.steam.serverName, cfg.steam.serverName,
+                             (DWORD)sizeof(cfg.steam.serverName), ini);
 #ifdef KSNETFIX_SERVER
     cfg.server = Server_LoadConfig(ini);
 #endif
@@ -1146,8 +1149,9 @@ static void Install() {
     }
     if (cfg.keyboardFix) Log("keyboard text input fix: %s", InstallKeyboardFix() ? "ok" : "FAILED");
     if (cfg.steam.enabled)
-        Log("steam transport (TCP/IP -> Steam, app id %u, %s lobbies): %s", cfg.steam.appId,
-            cfg.steam.lobbyFriendsOnly ? "friends-only" : "public", InstallSteamTransport() ? "ok" : "FAILED");
+        Log("steam transport (TCP/IP -> Steam, app id %u, %s): %s", cfg.steam.appId,
+            cfg.steam.gameServer ? "anonymous game server" : (cfg.steam.lobbyFriendsOnly ? "friends-only lobbies" : "public lobbies"),
+            InstallSteamTransport() ? "ok" : "FAILED");
     if (cfg.netTrace) {
         g_trace = OpenLog("ksnettrace.log");
         Log("engine net trace -> ksnettrace.log: %s", WriteRel32(A->traceFn, 0xE9, (void*)&TraceHook) ? "ok" : "FAILED");
