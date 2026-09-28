@@ -7,8 +7,8 @@
 # STEAMWORKS_SDK to the directory that contains public/steam/steam_api.h.
 # Optional overrides: VCTOOLS (MSVC toolset dir), WINSDK / WINSDKV (Windows 10/11 SDK).
 #
-# Add-ons (the dedicated server) compile extra sources into the same DLL:
-#   KSNF_EXTRA_SRC="file.cpp ..." KSNF_FLAGS="-DKSNETFIX_SERVER -I<dir>" KSNF_OUT=<dir> ./build.sh
+# Add-ons (the dedicated server) compile extra sources into the same DLL (lists separated by ';'):
+#   KSNF_EXTRA_SRC="a.cpp;b.cpp" KSNF_INCLUDE="dir1;dir2" KSNF_DEFINES="-DKSNETFIX_SERVER" KSNF_OUT=<dir> ./build.sh
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 win() { cygpath -m "$1"; }
@@ -56,9 +56,12 @@ fi
 OUT="${KSNF_OUT:-$ROOT/build}"
 mkdir -p "$OUT"
 O="$(win "$OUT")"
-EXTRA=
-for f in $KSNF_EXTRA_SRC; do EXTRA="$EXTRA $(win "$f")"; done
-"$CL" $CFLAGS -LD $KSNF_FLAGS -Fo"$O/" -Fd"$O/" ksnetfix.cpp steampeer.cpp $EXTRA \
+EXTRA=()
+IFS=';' read -r -a LIST <<< "${KSNF_EXTRA_SRC:-}"
+for f in "${LIST[@]}"; do [ -n "$f" ] && EXTRA+=("$(win "$f")"); done
+IFS=';' read -r -a LIST <<< "${KSNF_INCLUDE:-}"
+for d in "${LIST[@]}"; do [ -n "$d" ] && INCLUDE="$INCLUDE;$(win "$d")"; done
+"$CL" $CFLAGS -LD $KSNF_DEFINES -Fo"$O/" -Fd"$O/" ksnetfix.cpp steampeer.cpp "${EXTRA[@]}" \
   -link -DEF:dinput8.def -OUT:"$O/dinput8.dll" -IMPLIB:"$O/dinput8.lib" -PDB:"$O/dinput8.pdb" -PDBALTPATH:%_PDB% -DEBUG -OPT:REF $LIBS
 rm -f "$OUT/dinput8.exp" "$OUT/dinput8.lib"
 cp "$SDKROOT/redistributable_bin/steam_api.dll" "$OUT/steam_api.dll"
