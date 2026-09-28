@@ -1,0 +1,137 @@
+﻿KSNetFix 2.2 - poprawki multiplayer dla KnightShift / Polanie II
+=================================================================
+
+Dla wersji Steam gry (1.3). Poprawka nie zmienia plików gry - dokłada
+trzy pliki do jej folderu i można ją w każdej chwili usunąć.
+Strona projektu (kod źródłowy, nowe wersje, zgłaszanie błędów):
+   https://github.com/Joe13PL/KSNetFix
+
+
+CO DAJE
+-------
+- Gracz dołączony reaguje na kliknięcia (praktycznie) tak szybko jak host
+  (wcześniej ok. 1 sekundy opóźnienia).
+- Równe tempo gry: dokładny zegar zamiast wadliwego zegara procesora
+  (naprawia też złe tempo na procesorach powyżej 4,29 GHz) i nadrabianie
+  po chwilowych zacięciach zamiast trwałego lagu.
+- Mniej zatrzymań "Waiting for player..." przy wahaniach pingu.
+- Poprawne pisanie z klawiatury (wcześniej znikające / losowe litery,
+  trzeba było wciskać dwa klawisze naraz), z polskimi znakami (AltGr).
+- Gra przez Steam - bez LAN-u, Radmina i otwierania portów.
+- Wykrywanie rozsynchronizowania gry (zapis w logu).
+
+
+WYMAGANIA
+---------
+1. KnightShift ze Steama, Windows 10 lub 11.
+2. Włączony składnik Windows "DirectPlay":
+   Panel sterowania -> Programy -> Włącz lub wyłącz funkcje systemu Windows
+   -> Starsze składniki -> zaznacz DirectPlay.
+3. Uruchomiony i zalogowany klient Steam.
+4. KAŻDY gracz musi zainstalować tę samą paczkę.
+5. Każdy gracz musi mieć KnightShift na swoim koncie Steam
+   (gra przez Steam korzysta z identyfikatora gry KnightShift).
+
+
+INSTALACJA AUTOMATYCZNA
+-----------------------
+1. Zamknij grę.
+2. Rozpakuj ZIP w dowolne miejsce.
+3. Kliknij dwukrotnie ZAINSTALUJ.bat.
+   Skrypt sam znajdzie folder gry i skopiuje pliki. Jeśli ksnetfix.ini już
+   był w folderze gry, stara wersja zostanie zapisana jako ksnetfix.ini.bak.
+   Jeśli pojawi się błąd "Odmowa dostępu": prawy przycisk na ZAINSTALUJ.bat
+   -> Uruchom jako administrator.
+
+
+INSTALACJA RĘCZNA
+-----------------
+1. Steam -> Biblioteka -> KnightShift -> prawy przycisk -> Zarządzaj
+   -> Przeglądaj pliki lokalne.
+2. Skopiuj do tego folderu (obok KnightShift.exe):
+      dinput8.dll
+      steam_api.dll
+      ksnetfix.ini
+
+
+CZY DZIAŁA?
+-----------
+Uruchom grę normalnie (ze Steama). W folderze gry pojawi się plik
+ksnetfix.log. Pierwsze linie powinny kończyć się słowem "ok", np.:
+   precise clock: ok ...
+   keyboard text input fix: ok
+   steam transport (TCP/IP -> Steam, app id 254060, public lobbies): ok
+Po wejściu do menu gry sieciowej pojawi się też linia "steam: ready as ...".
+
+
+GRA PRZEZ STEAM (domyślnie włączona)
+------------------------------------
+Host:
+  Multiplayer -> połączenie TCP/IP (może się wyświetlać jako
+  "Steam (KSNetFix)") -> wpisz nazwę sesji -> Utwórz nową sesję.
+Pozostali gracze:
+  Multiplayer -> TCP/IP -> sesja hosta pojawi się na liście
+  "Dostępne sesje" (z pingiem) -> wybierz -> Dołącz.
+  Zamiast wybierać z listy można w polu adresu IP wpisać SteamID64 hosta
+  (17 cyfr) albo numer lobby.
+Zapraszanie: z listy znajomych w Steamie (zaproszone lobby jest na liście
+sesji oznaczone znakiem »).
+Przy pierwszym uruchomieniu Zapora Windows może zapytać o dostęp - zezwól
+(przynajmniej dla sieci prywatnych).
+
+Ważne:
+- Wszyscy gracze muszą mieć w ksnetfix.ini tę samą wartość AppId.
+  Domyślnie AppId=254060 (KnightShift) - znajomi widzą w Steamie, że grasz
+  w KnightShift. Połączenia idą przez serwery pośredniczące Valve (SDR).
+- Paczka 2.0 używała AppId=480 (Spacewar), od 2.1 jest 254060. Gracze
+  z wersją 2.0 i nowszą nie zobaczą swoich sesji - niech wszyscy
+  zainstalują najnowszą. Wersje 2.1 i 2.2 grają ze sobą bez problemu.
+- Gdy host opuści grę, sesja się kończy.
+- Dwóch gier na tym samym komputerze i tym samym koncie Steam nie da się
+  połączyć przez Steam (patrz niżej: gra przez LAN).
+
+
+GRA PRZEZ LAN / RADMIN / BEZPOŚREDNIE IP (bez Steama)
+-----------------------------------------------------
+W ksnetfix.ini, w sekcji [Steam], ustaw:
+   Enabled=0
+Wtedy TCP/IP działa jak w oryginalnej grze. Wszyscy gracze muszą mieć to
+samo ustawienie. Poprawki synchronizacji i klawiatury nadal działają.
+
+
+NAJWAŻNIEJSZE USTAWIENIA (ksnetfix.ini)
+---------------------------------------
+[Steam] Enabled=1 / 0      gra przez Steam / oryginalny DirectPlay (LAN)
+[Steam] LobbyType=public   public = sesję widzi każdy z KSNetFix,
+                           friends = tylko znajomi ze Steama
+[Steam] AppId=254060       musi być taki sam u wszystkich graczy
+                           (480 = Spacewar, ustawienie z wersji 2.0)
+CatchUpTarget=0            0 = najmniejsze opóźnienie rozkazów;
+                           1 = trochę większe opóźnienie, ale płynniej
+                           przy bardzo niestabilnym internecie
+KeyboardFix=1              poprawka pisania z klawiatury
+Enabled=0 (w [KSNetFix])   wyłącza wszystkie poprawki bez usuwania plików
+Pozostałe opcje są opisane w samym pliku ksnetfix.ini.
+
+
+PROBLEMY
+--------
+- Nie widać sesji: sprawdź, czy obaj macie włączonego Steama, ten sam
+  AppId i ten sam LobbyType (albo host ma "public"). Poczekaj ok. 5 sekund
+  na odświeżenie listy.
+- W logu "SteamAPI init failed": Steam nie jest uruchomiony albo gry
+  KnightShift nie ma na Twoim koncie Steam - wtedy działa zwykły LAN.
+- "Nieprawidłowy numer seryjny": dwie kopie gry z tym samym kluczem
+  (np. dwie gry na jednym komputerze) - gra na to nie pozwala.
+- W logu linia "DESYNC DETECTED": gry graczy się rozjechały - zapisz
+  pliki ksnetfix.log od wszystkich graczy.
+- Przy każdym problemie prześlij plik ksnetfix.log z folderu gry
+  (od hosta i od gracza). Więcej szczegółów o Steamie w logu:
+  [Steam] Verbose=1.
+
+
+ODINSTALOWANIE
+--------------
+Kliknij dwukrotnie ODINSTALUJ.bat albo usuń z folderu gry pliki:
+   dinput8.dll, steam_api.dll, ksnetfix.ini, ksnetfix*.log
+Gra wraca do stanu oryginalnego.

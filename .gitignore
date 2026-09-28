@@ -1,0 +1,9 @@
+/build/
+/dist/
+/sdk/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.log
