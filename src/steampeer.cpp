@@ -1400,15 +1400,18 @@ class SteamPeer : public IDirectPlay8Peer_ {
         DeliverCreate(id);
     }
 
+    // The player list leaves out the joining player itself: the joiner creates its own
+    // entry as the local player.
     void SendAck(uint64_t to, DPNID id, const std::vector<uint8_t>& reply) { // cs held
         Writer w;
         w.u32(id);
         w.u32(hostId);
         desc.Write(w);
         w.blob(reply);
-        w.u32((uint32_t)players.size());
+        w.u32((uint32_t)(players.size() - (Find(id) ? 1 : 0)));
         for (auto& kv : players) {
             const Player& p = kv.second;
+            if (p.id == id) continue;
             w.u32(p.id);
             w.u64(p.steam);
             w.u32(p.host ? 1 : 0);
@@ -1458,6 +1461,10 @@ class SteamPeer : public IDirectPlay8Peer_ {
             players[me] = self;
             order.push_back(me);
             for (auto& p : list) {
+                // Older hosts also list the joiner; replacing the local entry with that copy
+                // dropped DPNPLAYER_LOCAL and created the local player twice, so the game lost
+                // track of its own lobby slot (dead "Ready", other players' heroes in our slot).
+                if (p.id == me || p.steam == g_svc->me) continue;
                 p.lastRecv = GetTickCount();
                 players[p.id] = p;
                 if (p.id == host) order.insert(order.begin() + 1, p.id);
