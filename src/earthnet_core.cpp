@@ -80,10 +80,209 @@ std::vector<std::string> Tokenize(const std::string& line) {
     return w;
 }
 
+// ---------------------------------------------------------------------------
+// zlib (RFC 1950/1951). The game links zlib 1.1.3; its packets are zlib streams.
+// ---------------------------------------------------------------------------
+static uint32_t Adler32(const uint8_t* p, size_t n) {
+    uint32_t a = 1, b = 0;
+    for (size_t i = 0; i < n; i++) {
+        a = (a + p[i]) % 65521;
+        b = (b + a) % 65521;
+    }
+    return b << 16 | a;
+}
+
+std::vector<uint8_t> ZlibStore(const uint8_t* p, size_t n) {
+    std::vector<uint8_t> z = {0x78, 0x01};
+    size_t off = 0;
+    do {
+        size_t k = n - off > 65535 ? 65535 : n - off;
+        z.push_back(off + k == n ? 1 : 0); // BFINAL, BTYPE 00 (stored)
+        z.push_back((uint8_t)k);
+        z.push_back((uint8_t)(k >> 8));
+        z.push_back((uint8_t)~k);
+        z.push_back((uint8_t)(~k >> 8));
+        z.insert(z.end(), p + off, p + off + k);
+        off += k;
+    } while (off < n);
+    uint32_t a = Adler32(p, n);
+    for (int i = 3; i >= 0; i--) z.push_back((uint8_t)(a >> (8 * i)));
+    return z;
+}
+
+namespace {
+struct Bits {
+    const uint8_t* p;
+    size_t n, pos = 0;
+    uint32_t buf = 0;
+    int cnt = 0;
+    bool err = false;
+    int Get(int k) {
+        while (cnt < k) {
+            if (pos >= n) {
+                err = true;
+                return 0;
+            }
+            buf |= (uint32_t)p[pos++] << cnt;
+            cnt += 8;
+        }
+        int v = (int)(buf & ((1u << k) - 1));
+        buf >>= k;
+        cnt -= k;
+        return v;
+    }
+};
+
+// Canonical Huffman code: count of codes per length, symbols ordered by code.
+struct Huff {
+    uint16_t count[16];
+    uint16_t symbol[320];
+    bool Build(const uint8_t* len, int n) {
+        uint16_t offs[16];
+        memset(count, 0, sizeof(count));
+        for (int i = 0; i < n; i++) count[len[i]]++;
+        count[0] = 0;
+        int left = 1;
+        for (int l = 1; l < 16; l++) {
+            left <<= 1;
+            left -= count[l];
+            if (left < 0) return false; // over-subscribed
+        }
+        offs[1] = 0;
+        for (int l = 1; l < 15; l++) offs[l + 1] = offs[l] + count[l];
+        for (int i = 0; i < n; i++)
+            if (len[i]) symbol[offs[len[i]]++] = (uint16_t)i;
+        return true;
+    }
+    int Decode(Bits& b) const {
+        int code = 0, first = 0, index = 0;
+        for (int l = 1; l < 16; l++) {
+            code |= b.Get(1);
+            if (b.err) return -1;
+            int c = count[l];
+            if (code - first < c) return symbol[index + (code - first)];
+            index += c;
+            first += c;
+            first <<= 1;
+            code <<= 1;
+        }
+        return -1;
+    }
+};
+
+const uint16_t kLenBase[29] = {3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59,
+                               67, 83, 99, 115, 131, 163, 195, 227, 258};
+const uint8_t kLenExtra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+const uint16_t kDistBase[30] = {1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769,
+                                1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+const uint8_t kDistExtra[30] = {0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8,
+                                9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+
+bool Codes(Bits& b, const Huff& lit, const Huff& dist, std::vector<uint8_t>& out, size_t maxOut) {
+    for (;;) {
+        int sym = lit.Decode(b);
+        if (sym < 0) return false;
+        if (sym < 256) {
+            if (out.size() >= maxOut) return false;
+            out.push_back((uint8_t)sym);
+        } else if (sym == 256) {
+            return true;
+        } else {
+            sym -= 257;
+            if (sym >= 29) return false;
+            size_t len = kLenBase[sym] + b.Get(kLenExtra[sym]);
+            int d = dist.Decode(b);
+            if (d < 0 || d >= 30) return false;
+            size_t back = kDistBase[d] + b.Get(kDistExtra[d]);
+            if (b.err || back > out.size() || out.size() + len > maxOut) return false;
+            for (size_t i = 0; i < len; i++) out.push_back(out[out.size() - back]);
+        }
+    }
+}
+} // namespace
+
+bool Inflate(const uint8_t* p, size_t n, std::vector<uint8_t>& out, size_t maxOut) {
+    out.clear();
+    if (n < 6 || (p[0] & 0x0F) != 8 || ((p[0] << 8) | p[1]) % 31 != 0 || (p[1] & 0x20)) return false;
+    Bits b;
+    b.p = p + 2;
+    b.n = n - 2;
+    int last;
+    do {
+        last = b.Get(1);
+        int type = b.Get(2);
+        if (b.err) return false;
+        if (type == 0) {
+            b.buf = 0;
+            b.cnt = 0;
+            if (b.pos + 4 > b.n) return false;
+            size_t len = b.p[b.pos] | b.p[b.pos + 1] << 8;
+            size_t nlen = b.p[b.pos + 2] | b.p[b.pos + 3] << 8;
+            b.pos += 4;
+            if (len != (~nlen & 0xFFFF) || b.pos + len > b.n || out.size() + len > maxOut) return false;
+            out.insert(out.end(), b.p + b.pos, b.p + b.pos + len);
+            b.pos += len;
+        } else if (type == 1) {
+            static Huff lit, dist;
+            static bool built = false;
+            if (!built) {
+                uint8_t l[288];
+                for (int i = 0; i < 288; i++) l[i] = i < 144 ? 8 : i < 256 ? 9 : i < 280 ? 7 : 8;
+                lit.Build(l, 288);
+                for (int i = 0; i < 30; i++) l[i] = 5;
+                dist.Build(l, 30);
+                built = true;
+            }
+            if (!Codes(b, lit, dist, out, maxOut)) return false;
+        } else if (type == 2) {
+            static const uint8_t order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
+            int nlit = b.Get(5) + 257, ndist = b.Get(5) + 1, ncode = b.Get(4) + 4;
+            if (b.err || nlit > 286 || ndist > 30) return false;
+            uint8_t len[320] = {0};
+            for (int i = 0; i < ncode; i++) len[order[i]] = (uint8_t)b.Get(3);
+            Huff lencode, lit, dist;
+            if (!lencode.Build(len, 19)) return false;
+            memset(len, 0, sizeof(len));
+            int i = 0;
+            while (i < nlit + ndist) {
+                int sym = lencode.Decode(b);
+                if (sym < 0) return false;
+                if (sym < 16) {
+                    len[i++] = (uint8_t)sym;
+                    continue;
+                }
+                int rep, val = 0;
+                if (sym == 16) {
+                    if (i == 0) return false;
+                    val = len[i - 1];
+                    rep = 3 + b.Get(2);
+                } else if (sym == 17) {
+                    rep = 3 + b.Get(3);
+                } else {
+                    rep = 11 + b.Get(7);
+                }
+                if (b.err || i + rep > nlit + ndist) return false;
+                while (rep--) len[i++] = (uint8_t)val;
+            }
+            if (len[256] == 0) return false;
+            if (!lit.Build(len, nlit) || !dist.Build(len + nlit, ndist)) return false;
+            if (!Codes(b, lit, dist, out, maxOut)) return false;
+        } else {
+            return false;
+        }
+    } while (!last);
+    // Adler-32 of the data follows the last block (byte aligned).
+    size_t at = b.pos - (size_t)(b.cnt / 8);
+    if (at + 4 > b.n) return false;
+    uint32_t want = (uint32_t)b.p[at] << 24 | b.p[at + 1] << 16 | b.p[at + 2] << 8 | b.p[at + 3];
+    return want == Adler32(out.data(), out.size());
+}
+
 std::vector<uint8_t> Writer::Packet() const {
+    auto z = ZlibStore(b.data(), b.size());
     Writer p;
-    p.u32((uint32_t)b.size() + 4);
-    p.raw(b.data(), b.size());
+    p.u32((uint32_t)z.size() + 4);
+    p.raw(z.data(), z.size());
     return p.b;
 }
 
@@ -133,8 +332,14 @@ bool Session::OnData(const uint8_t* p, size_t n) {
                 return false;
             }
             if (in_.size() < len) return true;
-            std::vector<uint8_t> body(in_.begin() + 4, in_.begin() + len);
+            std::vector<uint8_t> body;
+            bool ok = Inflate(in_.data() + 4, len - 4, body, kMaxPacket);
             in_.erase(in_.begin(), in_.begin() + len);
+            if (!ok) {
+                Log("packet is not a valid zlib stream (%u bytes) - closing", len);
+                state_ = CLOSED;
+                return false;
+            }
             if (!OnPacket(body.data(), body.size())) {
                 state_ = CLOSED;
                 return false;

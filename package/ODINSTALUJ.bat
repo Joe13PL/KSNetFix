@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title KSNetFix 2.5 - odinstalowanie
+title KSNetFix 2.5.1 - odinstalowanie
 set "GAME=%~1"
 if not "%GAME%"=="" goto check
 for /f "tokens=2,*" %%A in ('reg query "HKLM\SOFTWARE\WOW6432Node\Reality Pump\KnightShift\BaseGame\FileSystem" /v outputdir 2^>nul ^| find /i "outputdir"') do set "GAME=%%B"

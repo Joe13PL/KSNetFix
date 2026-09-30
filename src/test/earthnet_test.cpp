@@ -1,11 +1,15 @@
 // SteamNet protocol core test - builds and runs anywhere (no Windows, no Steam, no game):
-//   g++ -std=c++17 -Wall -I.. earthnet_test.cpp ../earthnet_core.cpp -o earthnet_test && ./earthnet_test
+//   g++ -std=c++17 -Wall -I.. earthnet_test.cpp ../earthnet_core.cpp -lz -o earthnet_test && ./earthnet_test
+// zlib (the real library) packs the fake client's packets and unpacks the server's, like the game.
 // A fake EarthNet client sends what KnightShift.ex1 sends and parses the replies in the order
 // the game reads them (docs/STEAMNET_PROTOCOL.md). Reference signatures come from running the
 // game's own 0x8069E0 under an x86 emulator.
 #include "earthnet_core.h"
 
 #include <stdio.h>
+#include <zlib.h>
+
+#include <algorithm>
 #include <stdlib.h>
 #include <string.h>
 
@@ -44,6 +48,51 @@ static void TestSignature() {
     }
 }
 
+// Packet as the game sends it: u32 length + zlib stream (deflate level 6).
+static std::vector<uint8_t> GamePacket(const en::Writer& w) {
+    uLongf n = compressBound(w.b.size());
+    std::vector<uint8_t> z(n);
+    compress2(z.data(), &n, w.b.data(), w.b.size(), 6);
+    z.resize(n);
+    en::Writer p;
+    p.u32((uint32_t)n + 4);
+    p.raw(z.data(), z.size());
+    return p.b;
+}
+
+static bool Unzip(const std::vector<uint8_t>& z, std::vector<uint8_t>& out) {
+    out.assign(1 << 20, 0);
+    uLongf n = out.size();
+    if (uncompress(out.data(), &n, z.data(), z.size()) != Z_OK) return false;
+    out.resize(n);
+    return true;
+}
+
+static void TestZlib() {
+    std::vector<uint8_t> data;
+    for (int i = 0; i < 70000; i++) data.push_back((uint8_t)(i * 7 % 13 + (i / 1000)));
+    for (int level : {0, 1, 6, 9}) {
+        uLongf n = compressBound(data.size());
+        std::vector<uint8_t> z(n);
+        compress2(z.data(), &n, data.data(), data.size(), level);
+        std::vector<uint8_t> out;
+        CHECK(en::Inflate(z.data(), n, out));
+        CHECK(out == data);
+        z[n - 1] ^= 1; // bad checksum
+        CHECK(!en::Inflate(z.data(), n, out));
+    }
+    // the client information packet from a real game (KnightShift 1.3, KSNetFix 2.5 log)
+    auto info = Hex("789cb399ec94a113aae9b4554a68f3aa1aa50666060686007f9f75c202fc01767fa30198c90976");
+    std::vector<uint8_t> out;
+    CHECK(en::Inflate(info.data(), info.size(), out));
+    CHECK(out.size() == 31 && memcmp(out.data() + 20, "POL", 3) == 0); // GUID, "POL" (u32 length + text), 8 bytes
+    // our stored stream, read back by zlib
+    for (size_t len : {(size_t)0, (size_t)5, (size_t)65535, (size_t)65536, data.size()}) {
+        auto z = en::ZlibStore(data.data(), len);
+        CHECK(Unzip(z, out) && out == std::vector<uint8_t>(data.begin(), data.begin() + len));
+    }
+}
+
 // The client side, as far as the game's reading code goes.
 struct FakeClient {
     std::vector<uint8_t> in;   // bytes from the server
@@ -53,9 +102,9 @@ struct FakeClient {
         if (in.size() < 4) return false;
         uint32_t len = in[0] | in[1] << 8 | in[2] << 16 | (uint32_t)in[3] << 24;
         if (in.size() < len) return false;
-        body.assign(in.begin() + 4, in.begin() + len);
+        std::vector<uint8_t> z(in.begin() + 4, in.begin() + len);
         in.erase(in.begin(), in.begin() + len);
-        return true;
+        return Unzip(z, body);
     }
     void TakeLines() {
         for (;;) {
@@ -101,7 +150,7 @@ static void TestSession() {
     // 1. client information (contents do not matter), sent in two pieces
     en::Writer info;
     info.raw("KS-1.3-client-info", 18);
-    auto pkt = info.Packet();
+    auto pkt = GamePacket(info);
     CHECK(s.OnData(pkt.data(), 5));
     CHECK(c.in.empty());
     CHECK(s.OnData(pkt.data() + 5, pkt.size() - 5));
@@ -124,7 +173,7 @@ static void TestSession() {
     login.raw(guid, 16);
     login.u32(0); // not a reconnect
     login.raw(guid, 16);
-    pkt = login.Packet();
+    pkt = GamePacket(login);
     CHECK(s.OnData(pkt.data(), pkt.size()));
     CHECK(c.TakePacket(body));
     {
@@ -248,6 +297,7 @@ static void TestBadInput() {
 }
 
 int main() {
+    TestZlib();
     TestSignature();
     TestSession();
     TestBadInput();

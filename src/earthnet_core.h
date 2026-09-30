@@ -17,6 +17,11 @@ namespace en {
 // 64-byte login signature the client checks against its own identity (0x8069E0).
 void Sign(uint64_t identity, uint8_t out[64]);
 
+// Binary packets carry a zlib stream (the game's stream class 0x7995D0 with flags 0x6001 /
+// 0x6002 inflates / deflates). We write stored blocks and read anything zlib produces.
+std::vector<uint8_t> ZlibStore(const uint8_t* p, size_t n);
+bool Inflate(const uint8_t* p, size_t n, std::vector<uint8_t>& out, size_t maxOut = 1 << 20);
+
 // "text" with the characters the client would mangle (%, ") encoded as %XX.
 std::string Quote(const std::string& s);
 // Splits a client line into words; "quoted words" may contain spaces.
@@ -28,7 +33,7 @@ struct Writer {
     void u32(uint32_t v) { for (int i = 0; i < 4; i++) b.push_back((uint8_t)(v >> (8 * i))); }
     void raw(const void* p, size_t n) { b.insert(b.end(), (const uint8_t*)p, (const uint8_t*)p + n); }
     void str(const std::string& s) { u32((uint32_t)s.size()); raw(s.data(), s.size()); }
-    std::vector<uint8_t> Packet() const; // u32 total length + body
+    std::vector<uint8_t> Packet() const; // u32 total length + zlib(body), as on the wire
 };
 
 struct Reader {
