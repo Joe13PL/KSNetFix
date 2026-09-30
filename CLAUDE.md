@@ -15,4 +15,6 @@
 - A pushed tag `v<version>` runs `.github/workflows/release.yml`: MSVC build, `package.sh`, and a
   release with the full package (`dinput8.dll`, `steam_api.dll`, `ksnetfix.ini`, `INSTRUKCJA.txt`,
   `ZAINSTALUJ.bat`, `ODINSTALUJ.bat`). Tags without the `v` prefix do not trigger it.
-- Cloud sessions cannot push tags (the session git proxy rejects them); the owner pushes the tag.
+- Cloud sessions cannot push tags (the session git proxy rejects them). Instead run `release.yml`
+  by hand on `main` (workflow_dispatch, input `tag: v<version>`): it builds `main`, creates the
+  tag on that commit and publishes the release.
