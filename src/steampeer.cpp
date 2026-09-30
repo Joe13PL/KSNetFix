@@ -1846,6 +1846,7 @@ struct BoardOp {
     std::string board;
     int count = 10, score = 0;
     std::vector<int32> details;
+    std::function<bool(std::vector<int32_t>&)> refresh; // join: fix an existing entry's details
     // results, valid once `done` is set
     bool ok = false;
     std::vector<en::BoardEntry> out;
@@ -1907,8 +1908,21 @@ struct BoardOp {
         ISteamUserStats* us = SteamUserStats();
         if (join) {
             if (r->m_cEntryCount > 0) {
-                Log("steam: ranking \"%s\": already listed", board.c_str());
-                return Finish(true);
+                LeaderboardEntry_t e;
+                int32 d[k_cLeaderboardDetailsMax];
+                std::vector<int32_t> old;
+                if (us->GetDownloadedLeaderboardEntry(r->m_hSteamLeaderboardEntries, 0, &e, d, k_cLeaderboardDetailsMax))
+                    old.assign(d, d + (e.m_cDetails < k_cLeaderboardDetailsMax ? e.m_cDetails : k_cLeaderboardDetailsMax));
+                if (old.empty() || !refresh || !refresh(old)) {
+                    Log("steam: ranking \"%s\": already listed", board.c_str());
+                    return Finish(true);
+                }
+                Log("steam: ranking \"%s\": already listed, updating the name", board.c_str());
+                details.assign(old.begin(), old.end());
+                SteamAPICall_t c = us->UploadLeaderboardScore(lb, k_ELeaderboardUploadScoreMethodForceUpdate, e.m_nScore,
+                                                              details.data(), (int)details.size());
+                crUp.Set(c, this, &BoardOp::OnUploaded);
+                return;
             }
             SteamAPICall_t c = us->UploadLeaderboardScore(lb, k_ELeaderboardUploadScoreMethodKeepBest, score,
                                                           details.data(), (int)details.size());
@@ -1930,7 +1944,7 @@ struct BoardOp {
     }
     void OnUploaded(LeaderboardScoreUploaded_t* r, bool io) {
         bool success = !io && r->m_bSuccess;
-        Log("steam: ranking \"%s\": %s", board.c_str(), success ? "player added" : "upload refused");
+        Log("steam: ranking \"%s\": %s", board.c_str(), success ? "entry saved" : "upload refused");
         Finish(success);
     }
 };
@@ -1965,12 +1979,14 @@ class SteamRanking : public en::RankingService {
         op->Release();
         return ok;
     }
-    void Join(const std::string& board, int score, const std::vector<int32_t>& details) override {
+    void Join(const std::string& board, int score, const std::vector<int32_t>& details,
+              std::function<bool(std::vector<int32_t>&)> refresh) override {
         BoardOp* op = new BoardOp;
         op->join = op->create = true;
         op->board = board;
         op->score = score;
         op->details.assign(details.begin(), details.end());
+        op->refresh = std::move(refresh);
         PostBoardOp(op); // fire and forget
         op->Release();
     }

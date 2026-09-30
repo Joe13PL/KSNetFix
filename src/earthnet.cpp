@@ -276,9 +276,11 @@ bool IsOurHost(const char* name) {
     return name && (_stricmp(name, S.address) == 0 || _stricmp(name, kDeadServer) == 0 || _stricmp(name, "steamnet") == 0);
 }
 
-// Called from the client's connect (0x7FF8D0) after it stored the login at +0x4A80 and before it
-// builds the login packet (0x803110) from it: log in with the Steam account name instead. The
-// game keeps that name in the player profile afterwards, so the login window never appears.
+// Runs in our connect() when the game connects to SteamNet. The client's connect method (0x7FF8D0)
+// has stored the login at +0x4A80 by then, and the login packet (0x803110) is built from it only
+// after the server's hello: log in with the Steam account name instead. (Not in the host lookup:
+// "fastest server" resolves the name first and then calls 0x7FF8D0 again with the IP, which
+// rewrites the login.) The game keeps the name in the player profile afterwards.
 void UseSteamAccount() {
     std::string name = S.steamLogin && g_accountName && A.client && A.memAlloc ? g_accountName() : std::string();
     EnterCriticalSection(&g_cs);
@@ -311,7 +313,6 @@ void UseSteamAccount() {
 
 HANDLE WINAPI HookGetHostByName(HWND wnd, u_int msg, const char* name, char* buf, int buflen) {
     if (IsOurHost(name) && EnsureServer()) {
-        UseSteamAccount();
         InterlockedIncrement(&g_pendingRedirects);
         Log("steamnet: \"%s\" -> local server", name);
         return g_realGetHostByName(wnd, msg, "127.0.0.1", buf, buflen);
@@ -326,6 +327,7 @@ int WINAPI HookConnect(SOCKET s, const sockaddr* addr, int len) {
         if (a.sin_addr.s_addr == htonl(INADDR_LOOPBACK) && (port == g_earthNetPort || port == g_earthNetPort + 10)) {
             LONG left = InterlockedDecrement(&g_pendingRedirects);
             if (left >= 0) {
+                UseSteamAccount();
                 a.sin_port = htons(g_serverPort);
                 return g_realConnect(s, (const sockaddr*)&a, sizeof(a));
             }

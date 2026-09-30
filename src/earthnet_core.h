@@ -187,8 +187,10 @@ class RankingService {
     virtual ~RankingService() {}
     // Best `count` entries; create=false: a board that does not exist yet reads as empty.
     virtual bool Top(const std::string& board, bool create, int count, std::vector<BoardEntry>& out) = 0;
-    // Puts the player on the board with score/details unless they are on it already.
-    virtual void Join(const std::string& board, int score, const std::vector<int32_t>& details) = 0;
+    // Puts the player on the board with score/details unless they are on it already; an existing
+    // entry is rewritten (same score) when refresh changes its details. refresh may run on any thread.
+    virtual void Join(const std::string& board, int score, const std::vector<int32_t>& details,
+                      std::function<bool(std::vector<int32_t>&)> refresh) = 0;
 };
 
 // Board names: "SteamNet" (all time), "SteamNet 2026-09" (month), "SteamNet 2026-W40" (ISO week).
@@ -196,6 +198,8 @@ std::string RankingBoard(LadderPeriod period, int64_t unixTime);
 // details: {1 (layout), wins, losses, disconnects, last game (unix time), nick in 16 bytes}
 std::vector<int32_t> RankingDetails(const std::string& nick, int wins, int losses, int disconnects, int64_t lastGame);
 LadderRow RankingRow(const BoardEntry& e);
+// Puts nick into details of layout 1; false if they already had it (or another layout).
+bool RankingSetNick(std::vector<int32_t>& details, const std::string& nick);
 
 // LocalBackend plus the ranking from a RankingService.
 class RankedBackend : public LocalBackend {

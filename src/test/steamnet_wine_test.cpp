@@ -128,7 +128,9 @@ struct FakeRanking : en::RankingService {
         if (name == "SteamNet") out.assign(board.begin(), board.begin() + (board.size() < (size_t)count ? board.size() : count));
         return true;
     }
-    void Join(const std::string& name, int score, const std::vector<int32_t>& details) override {
+    void Join(const std::string& name, int score, const std::vector<int32_t>& details,
+              std::function<bool(std::vector<int32_t>&)> refresh) override {
+        (void)refresh;
         if (name != "SteamNet") return;
         en::BoardEntry e;
         e.steamName = "Wojtek";
@@ -176,11 +178,8 @@ int main() {
     HWND wnd = CreateWindowExA(0, "STATIC", "en", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
     static char hbuf[MAXGETHOSTSTRUCT];
     CHECK(ghbn(wnd, WM_USER + 1, "steam", hbuf, sizeof(hbuf)) != nullptr);
-    {   // the login the game is about to send is now the Steam account
-        uint32_t* login = *(uint32_t**)(g_clientObj + 0x4A80);
-        CHECK(login != g_oldLogin && g_oldLogin[0] == 0);
-        CHECK(login[0] == 1 && login[1] == 6 && login[2] == 6 && wcscmp((wchar_t*)(login + 3), L"Wojtek") == 0);
-    }
+    // resolving the name alone leaves the login alone ("fastest server" rewrites it afterwards)
+    CHECK(*(uint32_t**)(g_clientObj + 0x4A80) == g_oldLogin);
     MSG m;
     bool resolved = false;
     DWORD t0 = GetTickCount();
@@ -200,6 +199,11 @@ int main() {
     CHECK(a.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     CHECK(conn(s, (sockaddr*)&a, sizeof(a)) == 0);
+    {   // the login the game is about to send (built after the hello) is now the Steam account
+        uint32_t* login = *(uint32_t**)(g_clientObj + 0x4A80);
+        CHECK(login != g_oldLogin && g_oldLogin[0] == 0);
+        CHECK(login[0] == 1 && login[1] == 6 && login[2] == 6 && wcscmp((wchar_t*)(login + 3), L"Wojtek") == 0);
+    }
 
     std::vector<uint8_t> in, body;
     en::Writer info;

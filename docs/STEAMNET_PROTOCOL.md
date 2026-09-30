@@ -35,9 +35,11 @@ bajtów ANSI bez zera.
 Metoda łączenia klienta `0x7FF8D0(host, port, login, hasło)` zapisuje login jako napis Unicode pod `+0x4A80`
 (`{licznik 1, pojemność, długość, znaki, 0}`, pamięć z `Mem_Alloc 0x7971D0`), a dopiero potem woła
 `WSAAsyncGetHostByName` (`0x7FFC50`). Pakiet logowania (`0x803110`) bierze nick z `+0x4A80` (Unicode → ANSI,
-długość z nagłówka napisu). SteamNet w swojej wersji `WSAAsyncGetHostByName` podmienia ten napis na nazwę
-konta Steam (bez `"` i `%`, najwyżej 16 bajtów). Pierwsze połączenie nie ma więc pustego loginu i okno logowania
-się nie pokazuje; gra zapisuje login w profilu gracza. Sprawdzone emulacją `0x7FF8D0`.
+długość z nagłówka napisu) dopiero po powitaniu serwera. SteamNet w swojej wersji `connect()` podmienia ten
+napis na nazwę konta Steam (bez `"` i `%`, najwyżej 16 bajtów). Pierwsze połączenie nie ma więc pustego loginu
+i okno logowania się nie pokazuje; gra zapisuje login w profilu gracza. Sprawdzone emulacją `0x7FF8D0`.
+Nie w `WSAAsyncGetHostByName`: „najszybszy serwer” najpierw sam rozwiązuje nazwę, a potem woła `0x7FF8D0`
+jeszcze raz z adresem IP, co nadpisuje login zapamiętanym w profilu (tak było w 2.5.6).
 
 Gdy okno logowania jednak się pojawi: drugie słowo komunikatu błędu (`"tekst" "nick"`) trafia do kontrolki
 `0x564` tylko wtedy, gdy okno jest już otwarte (`0x81F9C0`), a komunikat pokazuje się tylko przy zapamiętanym

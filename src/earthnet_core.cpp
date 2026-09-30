@@ -718,10 +718,20 @@ LadderRow RankingRow(const BoardEntry& e) {
     return r;
 }
 
+bool RankingSetNick(std::vector<int32_t>& details, const std::string& nick) {
+    if (details.size() < 9 || details[0] != 1) return false;
+    std::vector<int32_t> fresh = RankingDetails(nick, 0, 0, 0, 0);
+    bool changed = false;
+    for (int i = 5; i < 9; i++) changed |= details[i] != fresh[i], details[i] = fresh[i];
+    return changed;
+}
+
 void RankedBackend::OnLogin(Session& s) {
     LocalBackend::OnLogin(s);
     // A new player shows up on the all-time board with 0 points; "last game" = first login.
-    ranking_.Join(RankingBoard(LADDER_ALL, now_()), 0, RankingDetails(s.PublicName(), 0, 0, 0, now_()));
+    std::string nick = s.PublicName();
+    ranking_.Join(RankingBoard(LADDER_ALL, now_()), 0, RankingDetails(nick, 0, 0, 0, now_()),
+                  [nick](std::vector<int32_t>& d) { return RankingSetNick(d, nick); });
 }
 
 std::vector<LadderRow> RankedBackend::OnLadder(Session& s, LadderPeriod period) {

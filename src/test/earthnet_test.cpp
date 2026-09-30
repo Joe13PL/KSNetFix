@@ -396,8 +396,14 @@ struct FakeRanking : en::RankingService {
         out.assign(it->second.begin(), it->second.begin() + std::min((size_t)count, it->second.size()));
         return true;
     }
-    void Join(const std::string& board, int score, const std::vector<int32_t>& details) override {
+    void Join(const std::string& board, int score, const std::vector<int32_t>& details,
+              std::function<bool(std::vector<int32_t>&)> refresh) override {
         calls.push_back("join " + board);
+        for (auto& old : boards[board])
+            if (old.steamName == "Wojtek") { // one entry per Steam account
+                if (refresh(old.details)) calls.push_back("refresh");
+                return;
+            }
         en::BoardEntry e;
         e.steamName = "Wojtek";
         e.score = score;
@@ -448,6 +454,11 @@ static void TestRanking() {
     FakeRanking ranking;
     en::RankedBackend backend(ranking, [] { return (int64_t)1790812800; });
     en::MemoryStore store;
+    en::BoardEntry old; // this account played before under the name "Test"
+    old.steamName = "Wojtek";
+    old.score = 150;
+    old.details = en::RankingDetails("Test", 12, 9, 3, 1790812800);
+    ranking.boards["SteamNet"].push_back(old);
     en::Session s(cfg, backend, store, [&](const uint8_t* p, size_t n) { c.in.insert(c.in.end(), p, p + n); }, nullptr);
     en::Writer info;
     info.raw("x", 1);
@@ -464,7 +475,7 @@ static void TestRanking() {
     pkt = GamePacket(login);
     CHECK(s.OnData(pkt.data(), pkt.size()) && s.LoggedIn());
     CHECK(s.Nick() == "Test" && s.PublicName() == "Wojtek");
-    CHECK(ranking.calls.size() == 1 && ranking.calls[0] == "join SteamNet");
+    CHECK(ranking.calls.size() == 2 && ranking.calls[0] == "join SteamNet" && ranking.calls[1] == "refresh");
     std::string l = "/ladder";
     l.push_back('\0');
     l += "/ladderw";
@@ -473,9 +484,14 @@ static void TestRanking() {
     std::vector<uint8_t> body;
     c.TakePacket(body);
     c.TakeLines();
-    CHECK(ranking.calls.size() == 3 && ranking.calls[1] == "top SteamNet create" && ranking.calls[2] == "top SteamNet 2026-W40");
+    CHECK(ranking.calls.size() == 4 && ranking.calls[2] == "top SteamNet create" && ranking.calls[3] == "top SteamNet 2026-W40");
     auto ladder = std::find_if(c.lines.begin(), c.lines.end(), [](const std::string& x) { return x.rfind("/ladder ", 0) == 0; });
-    CHECK(ladder != c.lines.end() && *ladder == "/ladder 0 \"Wojtek\" \"46296.000000\" 0 0 0 0 0 0 0");
+    // the name is updated, points and results stay
+    CHECK(ladder != c.lines.end() && *ladder == "/ladder 0 \"Wojtek\" \"46296.000000\" 12 9 3 150 0 0 0");
+    std::vector<int32_t> d = old.details;
+    CHECK(!en::RankingSetNick(d, "Test") && en::RankingSetNick(d, "Wojtek") && !en::RankingSetNick(d, "Wojtek"));
+    std::vector<int32_t> other = {2, 1, 1, 1, 1, 1, 1, 1, 1};
+    CHECK(!en::RankingSetNick(other, "Wojtek") && other[5] == 1); // unknown layout: left alone
     CHECK(!c.lines.empty() && c.lines.back() == "/ladderw 0");
 }
 
