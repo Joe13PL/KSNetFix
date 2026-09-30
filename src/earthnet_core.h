@@ -57,6 +57,14 @@ struct LoginInfo {
     bool reconnect = false;
 };
 
+// One ranking row as the ladder screen (0x82CF60) shows it; "games" is wins + losses + disconnects.
+struct LadderRow {
+    std::string nick;
+    double lastPlayed = 0; // OLE automation date (days since 1899-12-30, UTC)
+    int wins = 0, losses = 0, disconnects = 0, points = 0;
+};
+enum LadderPeriod { LADDER_ALL, LADDER_MONTH, LADDER_WEEK };
+
 class Session;
 
 class Backend {
@@ -71,6 +79,8 @@ class Backend {
     // "New RTS/RPG game": default approves at once; the client then hosts and calls OnGameHosted.
     virtual void OnHostRequest(Session& s, const std::string& name, const std::string& password);
     virtual void OnGameHosted(Session& s, const std::string& name, const std::string& guid) { (void)s; (void)name; (void)guid; }
+    // Ranking tabs; at most 10 rows are shown (the client has room for no more).
+    virtual std::vector<LadderRow> OnLadder(Session& s, LadderPeriod period) { (void)s; (void)period; return {}; }
     // Any other client command, for tracing and later features.
     virtual void OnCommand(Session& s, const std::vector<std::string>& words) { (void)s; (void)words; }
 };
@@ -120,6 +130,7 @@ class Session {
     void GameRemoved(const std::string& name);
     // Counters above the chat: players (logged in / all), games (open / all), channels.
     void Stats(int players, int allPlayers, int games, int allGames, int channels);
+    void Ladder(LadderPeriod period, const std::vector<LadderRow>& rows);
     void Line(const std::string& line); // raw line (without the terminating zero)
 
   private:

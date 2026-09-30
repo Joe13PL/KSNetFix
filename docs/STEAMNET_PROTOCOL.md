@@ -48,7 +48,7 @@ Sukces (`i32 0`), dalej po kolei:
 | `u32` × 9 | `+0x4ED8`, `+0x4ECC`, `+0x4ED4`, `+0x4ED0`, `+0x4EDC`, `+0x4EE0`, `+0x4EF0`, `+0x4EE4`, `+0x4EE8` | |
 | lista 1 | `+0x4EFC` / `+0x4F00` | powtarzane `{u8 indeks, napis}`, koniec = bajt `0xFF` |
 | lista 2 | `+0x4F10` / `+0x4F14` | jw. |
-| lista 3 | `+0x4F24` / `+0x4F28` | jw. |
+| lista 3 | `+0x4F24` / `+0x4F28` | jw. — **kategorie rankingu**; `/ladder` bez ważnego indeksu nie wypełnia tabeli (SteamNet: `{0, "KnightShift"}`) |
 | `u8` | `+0x4EEC` | |
 | `napis` | `+0x4EB8` | **nazwa kanału startowego**; `+0x4EBC` zerowany |
 | `u32 flaga`, `GUID` | obrazek/plik 1 | flaga 0 + GUID zerowy = pomiń (domyślny obrazek `+0x4A74`) |
@@ -98,7 +98,7 @@ Pierwszy znak linii serwera (`0x80E340`, skok po `znak − '$'`):
 | `&channel "nazwa"` | `+0xD0(nazwa)` | |
 | `$play "nazwa" x y <ipv4> "guid"` | `+0xC0(nazwa, 0,0,0,0)` | gra na liście; `ipv4` jako liczba dziesiętna (rekord +0x1C) |
 | `@play "nazwa" <gracze> x <ipv4> y "poziom" <maks> <reszta>` | `+0xC4(nazwa, poziom, gracze, maks, reszta)` | opis „nazwa (gracze/maks - poziom)”; `ipv4` 0 = bez zmian |
-| `&play "nazwa"` | `+0xD4(nazwa)` | |
+| `&play "nazwa"` | `+0xD4(nazwa)` | tylko gdy nazwa jest na liście (dokładne porównanie) |
 
 Rekord gry (`+0x4A64`, liczba `+0x4A68`, 0x34 B): +0x04 GUID, +0x14 nazwa, +0x1C IPv4, +0x24 poziom,
 +0x2C gracze, +0x30 maks. Dołączenie z listy: `0x82E920` → `0x84BBB0`/`0x84C500(ipv4)`.
@@ -117,12 +117,28 @@ Rekord gry (`+0x4A64`, liczba `+0x4A68`, 0x34 B): +0x04 GUID, +0x14 nazwa, +0x1C
 | `/bin <n>` + `n` bajtów | odczyt binarny (do rozpisania) |
 | `/plays "nazwa" "hasło"` | serwer pozwala hostować: klient woła `+0xE4(0)` (hostuje sesję DirectPlay „EarthNetSession”) i odsyła `/plays "nazwa" "hasło" "<guid sesji>"` |
 | `/playc …` | dołączanie do gry (`+0xE8`, `+0xC8`) — do rozpisania |
-| `/ladder`, `/ladderm`, `/ladderw` + dane | ranking (`0x80A6F0`, `+0xDC`); sama komenda bez danych = pusty ranking |
+| `/ladder`, `/ladderm`, `/ladderw` `kat` wiersze… | ranking (`0x80A6F0`, potem `+0xDC`); szczegóły niżej |
 | `/whois …` | informacje o graczu (`+0xF4`) |
 | `/syncstats a b c d e f g` | liczniki (`+0xF8`): gracze zalogowani / wszyscy, gry otwarte / wszystkie, kanały, 2× nieużywane |
 | `/info "tekst"` | `+0xB8` |
 | `/nickok` | `+0xFC` |
 | `/login …` (tekstowy) | tylko tryb 1 (nieużywany) |
+
+### Ranking (`0x80A6F0`, ekran `0x82CF60`)
+
+`/ladder` (ogólny), `/ladderm` (miesięczny), `/ladderw` (tygodniowy); `+0x29A8` = 0/1/2. Po komendzie:
+
+- `kat` — indeks w liście 3 z odpowiedzi na logowanie (`+0x4F24`). Zły indeks lub pusta pozycja → tabela
+  zostaje pusta (sam `+0xDC` i tak jest wołany).
+- potem wiersze po **9 słów**: `"nick" "data" zwyc przegr rozl punkty x y z`
+  - `data` — liczba dni od 1899-12-30 (data OLE, `sscanf "%lf"` → `VariantTimeToSystemTime`), pokazywana jako
+    data i godzina lokalna;
+  - `zwyc` `+0x214`, `przegr` `+0x218`, `rozl` `+0x21C`, `punkty` `+0x434` (ujemne → 0), `x` `+0x438`
+    (nieużywane na ekranie), `y` i `z` pomijane.
+- Koniec linii kończy tabelę. **Najwyżej 10 wierszy** (wiersz 0x428 B od `+0x14`; parser nie sprawdza granicy).
+
+Ekran: Poz. = numer wiersza, Gracz, Punkty, Gry = zwyc + przegr + rozl, Zwyc., Przegr., Rozł., Ostatnia gra.
+Własny nick (`+0x4A80`) jest wyróżniony kolorem. Sprawdzone emulacją (`analysis/steamnet_emu/emu_ladder.py`).
 
 ### Komendy klienta
 
@@ -130,7 +146,7 @@ Rekord gry (`+0x4A64`, liczba `+0x4A68`, 0x34 B): +0x04 GUID, +0x14 nazwa, +0x1C
 |---|---|
 | `/getplayerdata "nick" "KS_RPG_ChData.1.0"` | zaraz po zalogowaniu (bohater RPG z serwera) |
 | `/setplayerdata "nick" "klucz" "n"` + dane | zapis bohatera |
-| `/join "kanał" ["hasło"]` | zmiana kanału (`+0x44`) |
+| `/join "kanał" ["hasło"]` | zmiana kanału (`+0x44`); także po wyjściu z pokoju gry — innej wiadomości o końcu gry nie ma |
 | `/msg "#kanał" "tekst"` | wiadomość na kanale — tak wysyła okno czatu (serwer odpowiada `/send "nick" "tekst"`) |
 | `/msg "nick" "tekst"` | szept (serwer odpowiada `/msgc "nick" "tekst"`) |
 | `/send "tekst"` | wiadomość na kanale (`+0x48`, starsza ścieżka) |
@@ -152,8 +168,9 @@ ekran główny EarthNet (ekran `0x0C`).
 | +0x0C | 0x81B6D0 | `/create` |
 | +0x10 | 0x819570 | `/login` (tryb tekstowy / reconnect) |
 | +0x44 | 0x808880 | `/join` |
-| +0x48 | 0x809340 | `/send` |
-| +0x4C / +0x50 | 0x8097D0 / 0x809FE0 | ranking |
+| +0x48 | 0x809340 | wiadomość na kanale: `/msg "#kanał" "tekst"` |
+| +0x4C | 0x8097D0 | szept: `/msg "nick" "tekst"` — okno czatu woła je, gdy wciśnięty jest przełącznik „Prywatnie” (kontrolka `0x56A`), z graczem zaznaczonym na liście (`+0x51D8`) |
+| +0x50 | 0x809FE0 | ranking: `/ladder` / `/ladderm` / `/ladderw` (argument 0/1/2) |
 | +0x54…+0x70 | 0x80B580…0x80DE10 | `/plays`, `/playc`, `/playi`, `/play0/v/d`, `/playg`, `/newhost`, `/join` |
 | +0x7C | 0x80E340 | obsługa linii od serwera |
 | +0x80 / +0x84 | 0x802130 / 0x8023C0 | wysłano / odebrano (maszyna stanów) |

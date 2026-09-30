@@ -336,19 +336,35 @@ static void TestSession() {
     l1.push_back('\0');
     CHECK(s.OnData((const uint8_t*)l1.data(), l1.size()));
     c.TakeLines();
-    CHECK(c.lines.size() == 1 && c.lines[0] == "/ladderm");
+    CHECK(c.lines.size() == 1 && c.lines[0] == "/ladderm 0"); // category 0, no rows
+    c.lines.clear();
+    std::vector<en::LadderRow> rows(12);
+    rows[0].nick = "Test";
+    rows[0].lastPlayed = 46295.75;
+    rows[0].wins = 12, rows[0].losses = 9, rows[0].disconnects = 3, rows[0].points = 150;
+    for (size_t i = 1; i < rows.size(); i++) rows[i].nick = "Gracz " + std::to_string(i), rows[i].points = -5;
+    s.Ladder(en::LADDER_WEEK, rows);
+    c.TakeLines();
+    CHECK(c.lines.size() == 1);
+    if (c.lines.size() == 1) {
+        auto t = GameTokens(c.lines[0]);
+        CHECK(t.size() == 2 + 10 * 9); // at most 10 rows of 9 words (0x80A6F0 has room for 10)
+        CHECK(c.lines[0].rfind("/ladderw 0 \"Test\" \"46295.750000\" 12 9 3 150 0 0 0 \"Gracz 1\" ", 0) == 0);
+        CHECK(t.size() > 16 && t[16] == "0"); // negative points are sent as 0
+    }
     c.lines.clear();
 
-    // 8. channel change
+    // 8. channel change (also how the client leaves a game room: the hosted game goes away)
     std::string j = "/join \"Polanie\" \"\"";
     j.push_back('\0');
     CHECK(s.OnData((const uint8_t*)j.data(), j.size()));
     c.TakeLines();
-    CHECK(c.lines.size() == 4);
-    if (c.lines.size() == 4) {
+    CHECK(c.lines.size() == 5);
+    if (c.lines.size() == 5) {
         CHECK(GameTokens(c.lines[1])[0] == "/join" && GameTokens(c.lines[1])[1] == "Polanie");
         CHECK(GameTokens(c.lines[2])[0] == "$user" && GameTokens(c.lines[2])[1] == "Joe");
-        CHECK(c.lines[3] == "/syncstats 1 1 1 1 2 0 0");
+        CHECK(c.lines[3] == "&play \"RTS : test\"");
+        CHECK(c.lines[4] == "/syncstats 1 1 0 0 2 0 0");
     }
     c.lines.clear();
     CHECK(s.OnData((const uint8_t*)j.data(), j.size())); // again: no duplicate $channel

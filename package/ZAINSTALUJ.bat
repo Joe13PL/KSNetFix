@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title KSNetFix 2.5.3 - instalacja
+title KSNetFix 2.5.4 - instalacja
 set "SRC=%~dp0"
 set "GAME=%~1"
 
@@ -31,7 +31,7 @@ if exist "%GAME%\ksnetfix.ini" (
 )
 copy /y "%SRC%ksnetfix.ini" "%GAME%\" >nul || goto denied
 
-echo Zainstalowano KSNetFix 2.5.3:
+echo Zainstalowano KSNetFix 2.5.4:
 echo   dinput8.dll, steam_api.dll, ksnetfix.ini
 echo.
 echo Uruchom gre normalnie ze Steama. Szczegoly w pliku INSTRUKCJA.txt.

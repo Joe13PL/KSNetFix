@@ -432,7 +432,11 @@ bool Session::OnPacket(const uint8_t* p, size_t n) {
     w.str(cfg_.welcome);   // +0x4EB4 (message of the day, replaces the first)
     w.raw(zero16, 8);      // +0x4EF0 (double)
     for (int i = 0; i < 9; i++) w.u32(0);
-    for (int i = 0; i < 3; i++) w.u8(0xFF); // three empty {index, string} lists
+    w.u8(0xFF);            // {index, string} lists 1 and 2: empty
+    w.u8(0xFF);
+    w.u8(0);               // list 3 (+0x4F24): ranking categories; /ladder rows need a valid one
+    w.str("KnightShift");
+    w.u8(0xFF);
     w.u8(0);               // +0x4EEC
     w.str(channel_);       // +0x4EB8 first channel
     for (int i = 0; i < 2; i++) { // two server images: none
@@ -491,7 +495,8 @@ void Session::OnClientLine(const std::string& line) {
             backend_.OnGameHosted(*this, arg(1), arg(3));
         }
     } else if (cmd == "/ladder" || cmd == "/ladderm" || cmd == "/ladderw") {
-        Line(cmd); // empty ranking (0x80A6F0 with no rows)
+        LadderPeriod p = cmd == "/ladder" ? LADDER_ALL : cmd == "/ladderm" ? LADDER_MONTH : LADDER_WEEK;
+        Ladder(p, backend_.OnLadder(*this, p));
     } else if (cmd == "/update") {
         // profile data after login (country, age, ...): nothing to keep yet
     } else if (cmd == "/getplayerdata") {
@@ -567,6 +572,20 @@ void Session::Stats(int players, int allPlayers, int games, int allGames, int ch
     Line(buf);
 }
 
+void Session::Ladder(LadderPeriod period, const std::vector<LadderRow>& rows) {
+    // 0x80A6F0: category index (list 3 of the login reply), then per row
+    // "nick" "date" wins losses disconnects points <unused> <unused> <unused>.
+    std::string l = period == LADDER_ALL ? "/ladder 0" : period == LADDER_MONTH ? "/ladderm 0" : "/ladderw 0";
+    for (size_t i = 0; i < rows.size() && i < 10; i++) {
+        const LadderRow& r = rows[i];
+        char buf[160];
+        snprintf(buf, sizeof(buf), " \"%.6f\" %d %d %d %d 0 0 0", r.lastPlayed, r.wins, r.losses, r.disconnects,
+                 r.points < 0 ? 0 : r.points);
+        l += " " + Quote(r.nick) + buf;
+    }
+    Line(l);
+}
+
 void Backend::OnHostRequest(Session& s, const std::string& name, const std::string& password) {
     s.Line("/plays " + Quote(name) + " " + Quote(password));
 }
@@ -594,6 +613,10 @@ void LocalBackend::OnJoin(Session& s, const std::string& channel, const std::str
     }
     s.EnteredChannel(channel, "");
     s.UserEntered(s.Nick());
+    // The client sends /join when it leaves a game room, and says nothing else about the game:
+    // the player's games are over.
+    for (const std::string& g : games_) s.GameRemoved(g);
+    games_.clear();
     SendStats(s);
 }
 
