@@ -30,5 +30,10 @@ bool SteamNet_Install(const SteamNetSettings& s, const SteamNetGameAddrs& game);
 // Where the ranking is kept (Steam leaderboards); without it the ranking stays empty.
 namespace en { class RankingService; }
 void SteamNet_SetRanking(en::RankingService* r);
-// Steam account name in the game's ANSI code page ("" = Steam not available).
-void SteamNet_SetAccount(std::string (*accountName)());
+// The Steam account SteamNet logs in with: name in the game's ANSI code page ("" = Steam not
+// available) and the SteamID, which keys saved RPG heroes so a new Steam name keeps them.
+struct SteamNetAccount {
+    std::string name;
+    uint64_t id = 0;
+};
+void SteamNet_SetAccount(SteamNetAccount (*account)());

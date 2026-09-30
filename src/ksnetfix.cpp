@@ -30,7 +30,7 @@
 
 #pragma comment(lib, "winmm.lib")
 
-#define KSNETFIX_VERSION "2.5.7"
+#define KSNETFIX_VERSION "2.5.8"
 
 // ---------------------------------------------------------------------------
 // Per-build addresses (all verified by signature before use)
@@ -1206,7 +1206,12 @@ static void Install() {
         bool ranking = cfg.steamNet.ranking && cfg.steam.enabled && !cfg.steam.gameServer;
         if (ranking) SteamNet_SetRanking(Steam_Ranking());
         bool steamLogin = cfg.steamNet.steamLogin && cfg.steam.enabled && !cfg.steam.gameServer && g.client;
-        if (steamLogin) SteamNet_SetAccount(&Steam_AccountName);
+        if (steamLogin) SteamNet_SetAccount([] {
+            SteamNetAccount a;
+            a.name = Steam_AccountName();
+            if (!a.name.empty()) a.id = Steam_AccountId();
+            return a;
+        });
         Log("steamnet login: %s", steamLogin ? "Steam account name" : "the game's login window");
         Log("steamnet ranking: %s", ranking ? "Steam leaderboards" : cfg.steamNet.ranking ? "off (needs [Steam] Enabled=1)" : "off");
     }

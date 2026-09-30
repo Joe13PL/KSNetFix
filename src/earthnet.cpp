@@ -36,8 +36,11 @@ namespace {
 SteamNetSettings S;
 SteamNetGameAddrs A;
 en::RankingService* g_ranking;
-std::string (*g_accountName)();
-std::string g_account; // Steam account the game logs in with (set on the game thread before connecting)
+SteamNetAccount (*g_accountFn)();
+SteamNetAccount g_account;    // Steam account the game logs in with (set in our connect())
+std::string g_previousLogin;  // the game's own login it replaces
+uint32_t* g_pendingLogin;     // login string waiting for the hello reply
+void InstallSteamLogin();
 char g_gameDir[MAX_PATH];
 
 typedef FARPROC(WINAPI* GetProcAddressFn)(HMODULE, LPCSTR);
@@ -190,8 +193,11 @@ DWORD WINAPI ConnectionThread(void* param) {
     cfg.channel = S.channel;
     cfg.identity = (uint64_t)G<uint32_t>(A.identity) | (uint64_t)G<uint32_t>(A.identity + 4) << 32;
     EnterCriticalSection(&g_cs);
-    cfg.accountNick = g_account;
+    cfg.accountNick = g_account.name;
+    if (g_account.id) cfg.accountKey = "steam_" + std::to_string(g_account.id);
+    cfg.previousLogin = g_previousLogin;
     LeaveCriticalSection(&g_cs);
+    cfg.beforeHello = [] { InstallSteamLogin(); };
     std::unique_ptr<en::Backend> backendPtr;
     if (g_ranking && S.ranking)
         backendPtr.reset(new en::RankedBackend(*g_ranking, [] { return (int64_t)time(nullptr); }));
@@ -276,39 +282,72 @@ bool IsOurHost(const char* name) {
     return name && (_stricmp(name, S.address) == 0 || _stricmp(name, kDeadServer) == 0 || _stricmp(name, "steamnet") == 0);
 }
 
-// Runs in our connect() when the game connects to SteamNet. The client's connect method (0x7FF8D0)
-// has stored the login at +0x4A80 by then, and the login packet (0x803110) is built from it only
-// after the server's hello: log in with the Steam account name instead. (Not in the host lookup:
-// "fastest server" resolves the name first and then calls 0x7FF8D0 again with the IP, which
-// rewrites the login.) The game keeps the name in the player profile afterwards.
-void UseSteamAccount() {
-    std::string name = S.steamLogin && g_accountName && A.client && A.memAlloc ? g_accountName() : std::string();
-    EnterCriticalSection(&g_cs);
-    g_account = name;
-    LeaveCriticalSection(&g_cs);
-    if (name.empty()) {
-        if (S.steamLogin && g_accountName) Log("steamnet: Steam account not available - the game's own login is used");
+// Logging in with the Steam account. The client builds its login packet (0x803110) from the
+// string at +0x4A80 as soon as it gets the server's hello, so that is when we swap in the Steam
+// name (InstallSteamLogin, on the SteamNet connection thread). Earlier is too early: 0x7FF8D0 stores
+// the login first, and on the "fastest server" path it runs again after the lookup and after our
+// connect(), writing the profile's login back (2.5.6, 2.5.7). The string itself is made here, in our
+// connect() on the game thread, with the game's allocator. The game keeps the name in its profile.
+void PrepareSteamAccount() {
+    SteamNetAccount acc;
+    if (S.steamLogin && g_accountFn && A.client && A.memAlloc) acc = g_accountFn();
+    if (acc.name.empty()) {
+        if (S.steamLogin && g_accountFn) Log("steamnet: Steam account not available - the game's own login is used");
+        EnterCriticalSection(&g_cs);
+        g_account = SteamNetAccount();
+        g_previousLogin.clear();
+        g_pendingLogin = nullptr;
+        LeaveCriticalSection(&g_cs);
         return;
     }
+    std::string previous;
     uint8_t* client = G<uint8_t*>(A.client);
-    if (!client) return;
+    uint32_t* cur = client ? G<uint32_t*>((uint32_t)(uintptr_t)(client + 0x4A80)) : nullptr;
+    if (cur && cur[2] > 0 && cur[2] < 64) {
+        char a[256] = {0};
+        WideCharToMultiByte(CP_ACP, 0, (const wchar_t*)(cur + 3), (int)cur[2], a, sizeof(a) - 1, "?", nullptr);
+        previous = a;
+    }
     wchar_t w[64];
-    int n = MultiByteToWideChar(CP_ACP, 0, name.c_str(), (int)name.size(), w, 63);
-    if (n <= 0) return;
-    // wide string object: refcount, capacity, length, characters, 0 (as 0x7FF8D0 builds it)
-    typedef void*(__cdecl * AllocFn)(size_t);
-    uint32_t* str = (uint32_t*)((AllocFn)(uintptr_t)A.memAlloc)(12 + 2 * (n + 1));
-    if (!str) return;
-    str[0] = 1;
-    str[1] = (uint32_t)n;
-    str[2] = (uint32_t)n;
-    memcpy(str + 3, w, 2 * n);
-    ((wchar_t*)(str + 3))[n] = 0;
+    int n = MultiByteToWideChar(CP_ACP, 0, acc.name.c_str(), (int)acc.name.size(), w, 63);
+    uint32_t* str = nullptr;
+    if (n > 0) {
+        // wide string object: refcount, capacity, length, characters, 0 (as 0x7FF8D0 builds it)
+        typedef void*(__cdecl * AllocFn)(size_t);
+        str = (uint32_t*)((AllocFn)(uintptr_t)A.memAlloc)(12 + 2 * (n + 1));
+        if (str) {
+            str[0] = 1;
+            str[1] = (uint32_t)n;
+            str[2] = (uint32_t)n;
+            memcpy(str + 3, w, 2 * n);
+            ((wchar_t*)(str + 3))[n] = 0;
+        }
+    }
+    EnterCriticalSection(&g_cs);
+    g_account = acc;
+    g_previousLogin = previous;
+    g_pendingLogin = str; // an unused one from an earlier attempt is simply left allocated
+    LeaveCriticalSection(&g_cs);
+}
+
+// Right before the hello reply: the client is waiting for it and builds the login packet from
+// +0x4A80 when it arrives, so nothing touches that string now.
+void InstallSteamLogin() {
+    EnterCriticalSection(&g_cs);
+    uint32_t* str = g_pendingLogin;
+    g_pendingLogin = nullptr;
+    std::string name = g_account.name;
+    LeaveCriticalSection(&g_cs);
+    uint8_t* client = G<uint8_t*>(A.client);
+    if (!str || !client) return;
     uint32_t*& login = G<uint32_t*>((uint32_t)(uintptr_t)(client + 0x4A80));
     uint32_t* old = login;
+    char was[128] = {0};
+    if (old && old[2] > 0 && old[2] < 64)
+        WideCharToMultiByte(CP_ACP, 0, (const wchar_t*)(old + 3), (int)old[2], was, sizeof(was) - 1, "?", nullptr);
     login = str;
-    if (old) old[0]--; // the old login stays allocated if someone still holds it; tiny leak otherwise
-    Log("steamnet: logging in as the Steam account \"%s\"", name.c_str());
+    if (old && old != str) old[0]--; // stays allocated if someone still holds it; a tiny leak otherwise
+    Log("steamnet: logging in as the Steam account \"%s\" (the game had \"%s\")", name.c_str(), was);
 }
 
 HANDLE WINAPI HookGetHostByName(HWND wnd, u_int msg, const char* name, char* buf, int buflen) {
@@ -327,7 +366,7 @@ int WINAPI HookConnect(SOCKET s, const sockaddr* addr, int len) {
         if (a.sin_addr.s_addr == htonl(INADDR_LOOPBACK) && (port == g_earthNetPort || port == g_earthNetPort + 10)) {
             LONG left = InterlockedDecrement(&g_pendingRedirects);
             if (left >= 0) {
-                UseSteamAccount();
+                PrepareSteamAccount();
                 a.sin_port = htons(g_serverPort);
                 return g_realConnect(s, (const sockaddr*)&a, sizeof(a));
             }
@@ -378,7 +417,7 @@ void SteamNet_LoadConfig(const char* ini, SteamNetSettings& s) {
 }
 
 void SteamNet_SetRanking(en::RankingService* r) { g_ranking = r; }
-void SteamNet_SetAccount(std::string (*accountName)()) { g_accountName = accountName; }
+void SteamNet_SetAccount(SteamNetAccount (*account)()) { g_accountFn = account; }
 
 bool SteamNet_Install(const SteamNetSettings& s, const SteamNetGameAddrs& game) {
     S = s;

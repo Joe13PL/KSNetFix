@@ -495,6 +495,66 @@ static void TestRanking() {
     CHECK(!c.lines.empty() && c.lines.back() == "/ladderw 0");
 }
 
+// Steam account login: saved heroes follow the account, older ones move over from a nick.
+static void TestSteamAccount() {
+    FakeClient c;
+    en::SessionConfig cfg;
+    cfg.accountNick = "Wojtek";
+    cfg.accountKey = "steam_76561198000000001";
+    cfg.previousLogin = "Test";
+    int hellos = 0;
+    cfg.beforeHello = [&] { hellos++; CHECK(c.in.empty()); }; // before the hello goes out
+    en::LocalBackend backend;
+    en::MemoryStore store;
+    std::vector<uint8_t> hero = {1, 2, 3, 4};
+    store.Save("Test", "KS_RPG_ChData.1.0", hero); // saved by an older version under the login "Test"
+    en::Session s(cfg, backend, store, [&](const uint8_t* p, size_t n) { c.in.insert(c.in.end(), p, p + n); }, nullptr);
+    en::Writer info;
+    info.raw("x", 1);
+    auto pkt = GamePacket(info);
+    CHECK(s.OnData(pkt.data(), pkt.size()) && hellos == 1);
+    std::vector<uint8_t> body;
+    CHECK(c.TakePacket(body));
+    en::Writer login;
+    login.str("Wojtek");
+    login.str("");
+    login.u32(0);
+    login.u32(0);
+    login.u32(0);
+    uint8_t zero[16] = {0};
+    login.raw(zero, 16);
+    pkt = GamePacket(login);
+    CHECK(s.OnData(pkt.data(), pkt.size()) && s.LoggedIn());
+    c.TakePacket(body);
+    c.TakeLines();
+    c.lines.clear();
+
+    std::string l = "/getplayerdata \"Wojtek\" \"KS_RPG_ChData.1.0\"";
+    l.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)l.data(), l.size()));
+    CHECK(c.in.size() > 4 && std::equal(hero.begin(), hero.end(), c.in.end() - 4)); // the old hero
+    std::vector<uint8_t> moved;
+    CHECK(store.Load("steam_76561198000000001", "KS_RPG_ChData.1.0", moved) && moved == hero);
+    c.in.clear();
+
+    std::string save = "/setplayerdata \"Wojtek\" \"KS_RPG_ChData.1.0\" \"2\"";
+    save.push_back('\0');
+    save += "\x09\x08";
+    CHECK(s.OnData((const uint8_t*)save.data(), save.size()));
+    CHECK(store.Load("steam_76561198000000001", "KS_RPG_ChData.1.0", moved) && moved == std::vector<uint8_t>({9, 8}));
+    CHECK(!store.Load("Wojtek", "KS_RPG_ChData.1.0", moved)); // not under the Steam name
+
+    // the player list and chat show the account
+    std::string j = "/join \"KnightShift\" \"\"";
+    j.push_back('\0');
+    j += "/msg \"#KnightShift\" \"hej\"";
+    j.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)j.data(), j.size()));
+    c.TakeLines();
+    CHECK(std::find(c.lines.begin(), c.lines.end(), "$user \"Wojtek\" 0 \"\" \"00000000-0000-0000-0000-000000000000\"") != c.lines.end());
+    CHECK(std::find(c.lines.begin(), c.lines.end(), "/send \"Wojtek\" \"hej\"") != c.lines.end());
+}
+
 int main() {
     TestZlib();
     TestSignature();
@@ -502,6 +562,7 @@ int main() {
     TestBadInput();
     TestSteamNames();
     TestRanking();
+    TestSteamAccount();
     printf(g_fail ? "%d FAILED\n" : "all tests passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

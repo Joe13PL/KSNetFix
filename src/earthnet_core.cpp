@@ -381,6 +381,7 @@ void Session::OnClosed() {
 bool Session::OnPacket(const uint8_t* p, size_t n) {
     if (state_ == CLIENT_INFO) {
         Log("client information: %u bytes", (unsigned)n);
+        if (cfg_.beforeHello) cfg_.beforeHello();
         Writer w;
         w.u32(0); // accepted
         w.str(cfg_.welcome);
@@ -503,7 +504,20 @@ void Session::OnClientLine(const std::string& line) {
         // profile data after login (country, age, ...): nothing to keep yet
     } else if (cmd == "/getplayerdata") {
         std::vector<uint8_t> data;
-        bool found = store_.Load(arg(1), arg(2), data);
+        bool found;
+        if (OwnName(arg(1)) && !cfg_.accountKey.empty()) {
+            // own hero: kept under the account; older ones under a nick move over on first use
+            found = store_.Load(cfg_.accountKey, arg(2), data);
+            for (const std::string& old : {arg(1), cfg_.previousLogin}) {
+                if (found || old.empty()) continue;
+                if ((found = store_.Load(old, arg(2), data))) {
+                    Log("getplayerdata: saved data of \"%s\" moved to this Steam account", old.c_str());
+                    store_.Save(cfg_.accountKey, arg(2), data);
+                }
+            }
+        } else {
+            found = store_.Load(arg(1), arg(2), data);
+        }
         Log("getplayerdata \"%s\" \"%s\": %s (%u bytes)", arg(1).c_str(), arg(2).c_str(), found ? "found" : "none",
             (unsigned)data.size());
         char n[16];
@@ -528,7 +542,7 @@ void Session::OnClientLine(const std::string& line) {
 
 void Session::OnBinary(const std::vector<uint8_t>& data) {
     Log("setplayerdata \"%s\" \"%s\": %u bytes", binNick_.c_str(), binKey_.c_str(), (unsigned)data.size());
-    store_.Save(binNick_, binKey_, data);
+    store_.Save(OwnName(binNick_) && !cfg_.accountKey.empty() ? cfg_.accountKey : binNick_, binKey_, data);
 }
 
 void Session::UserEntered(const std::string& nick, const std::string& guid) {
@@ -614,7 +628,7 @@ void LocalBackend::OnJoin(Session& s, const std::string& channel, const std::str
         s.ChannelAdded(channel, "");
     }
     s.EnteredChannel(channel, "");
-    s.UserEntered(s.Nick());
+    s.UserEntered(s.PublicName());
     // The client sends /join when it leaves a game room, and says nothing else about the game:
     // the player's games are over.
     for (const std::string& g : games_) s.GameRemoved(g);
@@ -628,7 +642,7 @@ void LocalBackend::OnGameHosted(Session& s, const std::string& name, const std::
     SendStats(s);
 }
 
-void LocalBackend::OnSay(Session& s, const std::string& text) { s.ChannelMessage(s.Nick(), text); }
+void LocalBackend::OnSay(Session& s, const std::string& text) { s.ChannelMessage(s.PublicName(), text); }
 
 void LocalBackend::OnWhisper(Session& s, const std::string& to, const std::string& text) {
     s.WhisperTo(to, text);

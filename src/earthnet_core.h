@@ -102,6 +102,9 @@ struct SessionConfig {
     std::string askName = "Podaj nazwe gracza (dowolna) i kliknij OK."; // no % (format string)
     uint64_t identity = 0;          // the game's own identity (login signature)
     std::string accountNick;        // Steam account name; what other players see (empty: the login)
+    std::string accountKey;         // stable account id for saved data, e.g. "steam_7656..." (empty: the nick)
+    std::string previousLogin;      // the game's own login before SteamNet replaced it (old saved data)
+    std::function<void()> beforeHello; // runs right before the hello reply (the client logs in on it)
 };
 
 class Session {
@@ -146,6 +149,7 @@ class Session {
     void OnClientLine(const std::string& line);
     void OnBinary(const std::vector<uint8_t>& data);
     void Log(const char* fmt, ...);
+    bool OwnName(const std::string& nick) const { return nick == nick_ || nick == PublicName(); }
 
     SessionConfig cfg_;
     Backend& backend_;

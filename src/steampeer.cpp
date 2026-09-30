@@ -2015,6 +2015,8 @@ en::RankingService* Steam_Ranking() {
     return &r;
 }
 
+unsigned long long Steam_AccountId() { return g_steamOk && g_svc && !g_gs ? g_svc->me : 0; }
+
 std::string Steam_AccountName() {
     if (!S.enabled || !EnsureSteam() || g_gs) return std::string();
     std::string nick = en::SanitizeNick(Ansi(SteamFriends()->GetPersonaName()));

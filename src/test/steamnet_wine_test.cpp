@@ -73,7 +73,12 @@ static uint8_t g_clientObj[0x5200];
 static uint8_t* g_clientPtr = g_clientObj;
 static uint32_t g_oldLogin[8] = {1, 3, 3, 0x006f004a, 0x00000065}; // L"Joe"
 static void* __cdecl GameAlloc(size_t n) { return malloc(n); }
-static std::string SteamAccount() { return "Wojtek"; }
+static SteamNetAccount SteamAccount() {
+    SteamNetAccount a;
+    a.name = "Wojtek";
+    a.id = 76561198000000001ull;
+    return a;
+}
 static uint32_t g_identity[2] = {0x89abcdef, 0x01234567};
 
 static const char kKey[] = "Software\\Reality Pump\\KnightShift\\BaseGame\\Network\\EarthNet";
@@ -199,11 +204,8 @@ int main() {
     CHECK(a.sin_addr.s_addr == htonl(INADDR_LOOPBACK));
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     CHECK(conn(s, (sockaddr*)&a, sizeof(a)) == 0);
-    {   // the login the game is about to send (built after the hello) is now the Steam account
-        uint32_t* login = *(uint32_t**)(g_clientObj + 0x4A80);
-        CHECK(login != g_oldLogin && g_oldLogin[0] == 0);
-        CHECK(login[0] == 1 && login[1] == 6 && login[2] == 6 && wcscmp((wchar_t*)(login + 3), L"Wojtek") == 0);
-    }
+    // connect() only prepares the new login; the game could still rewrite its own until the hello
+    CHECK(*(uint32_t**)(g_clientObj + 0x4A80) == g_oldLogin);
 
     std::vector<uint8_t> in, body;
     en::Writer info;
@@ -212,6 +214,11 @@ int main() {
     CHECK(RecvPacket(s, in, body));
     en::Reader r(body.data(), body.size());
     CHECK(r.u32() == 0 && r.str() == "Witaj w SteamNet (test)");
+    {   // the hello is what makes the client build its login packet: the Steam account is in place
+        uint32_t* login = *(uint32_t**)(g_clientObj + 0x4A80);
+        CHECK(login != g_oldLogin && g_oldLogin[0] == 0);
+        CHECK(login[0] == 1 && login[1] == 6 && login[2] == 6 && wcscmp((wchar_t*)(login + 3), L"Wojtek") == 0);
+    }
 
     en::Writer login;
     login.str("Joe");
@@ -242,7 +249,7 @@ int main() {
     send(s, say.data(), (int)say.size(), 0);
     CHECK(RecvLine(s, in, line));
     printf("  line: %s\n", line.c_str());
-    CHECK(line == "/send \"Joe\" \"czesc\"");
+    CHECK(line == "/send \"Wojtek\" \"czesc\""); // chat shows the Steam account
 
     // ranking: the login put Joe on the (fake) Steam board, /ladder shows him
     std::string ladder = "/ladder";
