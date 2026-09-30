@@ -30,7 +30,7 @@
 
 #pragma comment(lib, "winmm.lib")
 
-#define KSNETFIX_VERSION "2.4"
+#define KSNETFIX_VERSION "2.5"
 
 // ---------------------------------------------------------------------------
 // Per-build addresses (all verified by signature before use)

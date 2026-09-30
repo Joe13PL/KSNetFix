@@ -1,5 +1,7 @@
 # Tag push vX.Y -> builds KSNetFix with MSVC (package.sh) and publishes the GitHub release
 # with dist/KSNetFix-X.Y.zip. Release text: docs/release-notes/vX.Y.md (+ SHA-256 of the zip).
+# Run by hand (Actions -> release -> Run workflow, or the API) on a branch with tag vX.Y: builds
+# that branch and, if the tag does not exist yet, creates it on the built commit with the release.
 name: release
 on:
   push:
@@ -7,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'existing tag to (re)build, e.g. v2.3'
+        description: 'release tag, e.g. v2.5 (created on the selected branch if missing)'
         required: true
 permissions:
   contents: write
@@ -25,7 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ env.TAG }}
+          # a pushed tag builds itself; a manual run builds the selected branch
+          ref: ${{ github.event_name == 'push' && env.TAG || github.sha }}
       - name: Steamworks SDK
         run: |
           curl -fsSL -A "KSNetFix release build" -o sw.crate "$STEAMWORKS_CRATE"
@@ -56,5 +59,5 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ZIP" --clobber
           else
-            gh release create "$TAG" "$ZIP" --title "KSNetFix $VER" --notes-file notes.md --verify-tag
+            gh release create "$TAG" "$ZIP" --title "KSNetFix $VER" --notes-file notes.md --target "$GITHUB_SHA"
           fi
