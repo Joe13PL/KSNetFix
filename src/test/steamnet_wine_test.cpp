@@ -4,6 +4,7 @@
 //   ./build.sh tests  (MSVC) -> build/test/steamnet_test.exe, or from src/test:
 //   i686-w64-mingw32-g++ -std=c++17 -O1 -static -I.. steamnet_wine_test.cpp ../earthnet.cpp \
 //       ../earthnet_core.cpp -lws2_32 -ladvapi32 -o steamnet_wine_test.exe && wine steamnet_wine_test.exe
+#define _CRT_SECURE_NO_WARNINGS
 #define WIN32_LEAN_AND_MEAN
 #include <winsock2.h>
 #include <ws2tcpip.h>
