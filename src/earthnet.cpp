@@ -350,6 +350,24 @@ void PrepareSteamAccount() {
     g_previousLogin = previous;
     g_pendingLogin = str; // an unused one from an earlier attempt is simply left allocated
     LeaveCriticalSection(&g_cs);
+
+    // The saved login (DAT_00a58f08): the game passes it to 0x7FF8D0, keeps it in the player profile
+    // and shows it in "X entered the channel" (0x823540). ANSI string object, same header.
+    if (A.loginGlobal) {
+        typedef void*(__cdecl * AllocFn)(size_t);
+        size_t len = acc.name.size();
+        uint32_t* s = (uint32_t*)((AllocFn)(uintptr_t)A.memAlloc)(12 + len + 1);
+        if (s) {
+            s[0] = 1;
+            s[1] = (uint32_t)len;
+            s[2] = (uint32_t)len;
+            memcpy(s + 3, acc.name.c_str(), len + 1);
+            uint32_t*& saved = G<uint32_t*>(A.loginGlobal);
+            uint32_t* old = saved;
+            saved = s;
+            if (old) old[0]--; // stays allocated if someone still holds it
+        }
+    }
 }
 
 // Right before the hello reply: the client is waiting for it and builds the login packet from

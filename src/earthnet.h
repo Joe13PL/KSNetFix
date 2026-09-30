@@ -24,6 +24,7 @@ struct SteamNetGameAddrs {
     uint32_t clientVtable = 0; // the client's vtable (checks a pointer really is a client)
     uint32_t lookupBuffer = 0; // offset of the host lookup buffer in the client object
     uint32_t memAlloc = 0;     // the game's allocator, void* __cdecl(size_t)
+    uint32_t loginGlobal = 0;  // the saved login (ANSI string object; profile, "X entered the channel")
 };
 
 // Renames the menu entry and hooks the game's winsock lookups. Call from DllMain.

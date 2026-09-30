@@ -359,19 +359,18 @@ static void TestSession() {
     j.push_back('\0');
     CHECK(s.OnData((const uint8_t*)j.data(), j.size()));
     c.TakeLines();
-    CHECK(c.lines.size() == 5);
-    if (c.lines.size() == 5) {
+    // no $user for the player: the client lists itself when it enters the channel (0x823540)
+    CHECK(c.lines.size() == 4);
+    if (c.lines.size() == 4) {
         CHECK(GameTokens(c.lines[1])[0] == "/join" && GameTokens(c.lines[1])[1] == "Polanie");
-        CHECK(GameTokens(c.lines[2])[0] == "$user" && GameTokens(c.lines[2])[1] == "Joe");
-        // with the client's own GUID from the end of its login packet: listed as the player himself
-        CHECK(GameTokens(c.lines[2])[2] == "0" && GameTokens(c.lines[2])[4] == "00030201-0000-0000-0000-000000000000");
-        CHECK(c.lines[3] == "&play \"RTS : test\"");
-        CHECK(c.lines[4] == "/syncstats 1 1 0 0 2 0 0");
+        CHECK(c.lines[2] == "&play \"RTS : test\"");
+        CHECK(c.lines[3] == "/syncstats 1 1 0 0 2 0 0");
     }
+    CHECK(s.OwnGuid() == "00030201-0000-0000-0000-000000000000"); // the end of the login packet
     c.lines.clear();
     CHECK(s.OnData((const uint8_t*)j.data(), j.size())); // again: no duplicate $channel
     c.TakeLines();
-    CHECK(c.lines.size() == 3 && GameTokens(c.lines[0])[0] == "/join");
+    CHECK(c.lines.size() == 2 && GameTokens(c.lines[0])[0] == "/join");
     CHECK(s.Channel() == "Polanie");
 
     for (auto& l : log) printf("  log: %s\n", l.c_str());
@@ -549,14 +548,14 @@ static void TestSteamAccount() {
     CHECK(store.Load("steam_76561198000000001", "KS_RPG_ChData.1.0", moved) && moved == std::vector<uint8_t>({9, 8}));
     CHECK(!store.Load("Wojtek", "KS_RPG_ChData.1.0", moved)); // not under the Steam name
 
-    // the player list and chat show the account
+    // chat shows the account; the player list entry is the client's own (no $user)
     std::string j = "/join \"KnightShift\" \"\"";
     j.push_back('\0');
     j += "/msg \"#KnightShift\" \"hej\"";
     j.push_back('\0');
     CHECK(s.OnData((const uint8_t*)j.data(), j.size()));
     c.TakeLines();
-    CHECK(std::find(c.lines.begin(), c.lines.end(), "$user \"Wojtek\" 0 \"\" \"00000000-0000-0000-0000-000000000000\"") != c.lines.end());
+    CHECK(std::none_of(c.lines.begin(), c.lines.end(), [](const std::string& x) { return x.rfind("$user ", 0) == 0; }));
     CHECK(std::find(c.lines.begin(), c.lines.end(), "/send \"Wojtek\" \"hej\"") != c.lines.end());
 }
 

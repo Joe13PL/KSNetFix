@@ -75,6 +75,8 @@ static const uint32_t kClientVtable = 0x008FABA0;
 static uint8_t g_clientObj[0x5200];
 static uint8_t g_globalClientObj[0x5200];
 static uint8_t* g_clientPtr = g_globalClientObj;
+static uint32_t g_savedLoginObj[4] = {1, 4, 4, 0x74736554}; // "Test" + 0: the profile's login (DAT_00a58f08)
+static uint32_t* g_savedLogin = g_savedLoginObj;
 static uint32_t g_oldLogin[8] = {1, 3, 3, 0x006f004a, 0x00000065}; // L"Joe"
 static void* __cdecl GameAlloc(size_t n) { return malloc(n); }
 static SteamNetAccount SteamAccount() {
@@ -164,7 +166,8 @@ int main() {
     SteamNetSettings st;
     strcpy(st.welcome, "Witaj w SteamNet (test)");
     SteamNetGameAddrs addrs = {(uint32_t)(uintptr_t)g_menuString, (uint32_t)(uintptr_t)g_identity,
-                               (uint32_t)(uintptr_t)&g_clientPtr, kClientVtable, 0x4AB0, (uint32_t)(uintptr_t)&GameAlloc};
+                               (uint32_t)(uintptr_t)&g_clientPtr, kClientVtable, 0x4AB0, (uint32_t)(uintptr_t)&GameAlloc,
+                               (uint32_t)(uintptr_t)&g_savedLogin};
     memcpy(g_clientObj, &kClientVtable, 4);
     memcpy(g_globalClientObj, &kClientVtable, 4);
     *(uint32_t**)(g_clientObj + 0x4A80) = g_oldLogin;
@@ -212,6 +215,9 @@ int main() {
     CHECK(conn(s, (sockaddr*)&a, sizeof(a)) == 0);
     // connect() only prepares the new login; the game could still rewrite its own until the hello
     CHECK(*(uint32_t**)(g_clientObj + 0x4A80) == g_oldLogin);
+    // the saved login is replaced on the game thread right away (profile, "X entered the channel")
+    CHECK(g_savedLogin != g_savedLoginObj && g_savedLoginObj[0] == 0);
+    CHECK(g_savedLogin[2] == 6 && strcmp((const char*)(g_savedLogin + 3), "Wojtek") == 0);
 
     std::vector<uint8_t> in, body;
     en::Writer info;

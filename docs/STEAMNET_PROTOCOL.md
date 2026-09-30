@@ -46,7 +46,13 @@ vtable `0x8FABA0`. 2.5.6–2.5.8 zmieniały login w obiekcie globalnym, więc gr
 
 **Siebie na liście graczy** gra rozpoznaje po id `+0x4EEC` i GUID `+0x506C` (`0x8207D0`): wpis z innymi jest
 rysowany kolorem „inny gracz” (`translateEarthNetNewUserFormat`, żółty). GUID to ostatnie 16 bajtów pakietu
-logowania; SteamNet odsyła go w `$user` gracza (tekst GUID-u = bajty w tej samej kolejności, sprawdzone emulacją).
+logowania (tekst GUID-u w `$user` = bajty w tej samej kolejności, sprawdzone emulacją). Serwer **nie wysyła**
+`$user` gracza: klient dodaje się sam po zalogowaniu (`0x81F9C0`) i przy każdym wejściu na kanał (`0x823540`,
+po `/join`), więc własny wpis dawał duplikat.
+
+**Zapamiętany login** `DAT_00a58f08` (napis ANSI, ten sam nagłówek) gra podaje do `0x7FF8D0`, zapisuje w profilu
+i pokazuje w „X wszedł na kanał.” (`0x823540`, `translateBNOwnerEnterChannel`). SteamNet podmienia go w naszym
+`connect()` (wątek gry) na nazwę konta Steam.
 Zapisane dane gracza (`/setplayerdata`, bohater RPG) są kluczowane identyfikatorem konta (`steam_<SteamID>`),
 więc zmiana nazwy na Steam ich nie gubi; dane zapisane wcześniej pod nickiem są przenoszone przy pierwszym odczycie.
 

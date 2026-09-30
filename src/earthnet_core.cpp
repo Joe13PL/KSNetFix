@@ -629,7 +629,7 @@ void LocalBackend::OnJoin(Session& s, const std::string& channel, const std::str
         s.ChannelAdded(channel, "");
     }
     s.EnteredChannel(channel, "");
-    s.UserEntered(s.PublicName(), s.OwnGuid());
+    // no $user for the player: entering the channel (0x823540) lists the player itself
     // The client sends /join when it leaves a game room, and says nothing else about the game:
     // the player's games are over.
     for (const std::string& g : games_) s.GameRemoved(g);
