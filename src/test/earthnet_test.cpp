@@ -163,7 +163,27 @@ static void TestSession() {
         CHECK(r.ok && r.pos == body.size());
     }
 
-    // 2. login packet (0x803110)
+    // 2a. first connect from the server list: empty name -> error, connection stays open
+    en::Writer anon;
+    anon.str("");
+    anon.str("");
+    anon.u32(0);
+    anon.u32(0);
+    anon.u32(0);
+    uint8_t zero[16] = {0};
+    anon.raw(zero, 16);
+    auto apkt = GamePacket(anon);
+    CHECK(s.OnData(apkt.data(), apkt.size()));
+    CHECK(c.TakePacket(body));
+    {
+        en::Reader r(body.data(), body.size());
+        CHECK(r.u32() != 0);
+        std::string t = r.str();
+        CHECK(!t.empty() && t[0] == '"' && t.find('%') == std::string::npos);
+    }
+    CHECK(!s.LoggedIn());
+
+    // 2b. the login window sends the name on the same connection (0x819570)
     en::Writer login;
     login.str("Joe");
     login.str("haslo");

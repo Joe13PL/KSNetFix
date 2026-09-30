@@ -395,13 +395,25 @@ bool Session::OnPacket(const uint8_t* p, size_t n) {
     uint32_t guids = r.u32();
     if (guids <= 64) r.skip(16 * guids);
     li.reconnect = r.u32() != 0;
-    if (!r.ok || li.login.empty()) {
+    if (!r.ok) {
         Log("malformed login packet (%u bytes)", (unsigned)n);
         Writer w;
         w.u32(1);
-        w.str("SteamNet: invalid login");
+        w.str("\"SteamNet: invalid login\"");
         Packet(w);
         return false;
+    }
+    if (li.login.empty()) {
+        // First connect from the server list: no name yet. An error makes the client open its
+        // login window (0x81F9C0); it then sends another login packet on this same connection
+        // (0x819570) and waits for the reply, so the connection must stay open. The text is
+        // "message" ["name for the name field"]; the message is used as a format string.
+        Log("login without a name - asking for one");
+        Writer w;
+        w.u32(1);
+        w.str("\"" + cfg_.askName + "\"");
+        Packet(w);
+        return true;
     }
     nick_ = li.login;
     channel_ = cfg_.channel;
