@@ -232,7 +232,7 @@ static void TestSession() {
     if (c.lines.size() == 3) {
         auto t = GameTokens(c.lines[0]);
         CHECK(t.size() == 5 && t[0] == "$channel" && t[1] == "KnightShift");
-        CHECK(c.lines[1] == "/syncstats 1 1 0 0 1 0 0");
+        CHECK(c.lines[1] == "/syncstats 1 1 1 0 0 0 0"); // all/logged players, channels, running/open games
         t = GameTokens(c.lines[2]);
         CHECK(t.size() == 3 && t[0] == "/send" && t[1] == "SteamNet");
     }
@@ -325,7 +325,7 @@ static void TestSession() {
     if (c.lines.size() == 2) {
         auto t = GameTokens(c.lines[0]);
         CHECK(t.size() == 6 && t[0] == "$play" && t[1] == "RTS : test" && t[5] == "04030201-0605-0807-090a-0b0c0d0e0f10");
-        CHECK(c.lines[1] == "/syncstats 1 1 1 1 1 0 0");
+        CHECK(c.lines[1] == "/syncstats 1 1 1 0 1 0 0");
     }
     c.lines.clear();
 
@@ -364,7 +364,7 @@ static void TestSession() {
     if (c.lines.size() == 4) {
         CHECK(GameTokens(c.lines[1])[0] == "/join" && GameTokens(c.lines[1])[1] == "Polanie");
         CHECK(c.lines[2] == "&play \"RTS : test\"");
-        CHECK(c.lines[3] == "/syncstats 1 1 0 0 2 0 0");
+        CHECK(c.lines[3] == "/syncstats 1 1 2 0 0 0 0");
     }
     CHECK(s.OwnGuid() == "00030201-0000-0000-0000-000000000000"); // the end of the login packet
     c.lines.clear();
@@ -559,6 +559,153 @@ static void TestSteamAccount() {
     CHECK(std::find(c.lines.begin(), c.lines.end(), "/send \"Wojtek\" \"hej\"") != c.lines.end());
 }
 
+// Online channels over a fake lobby service (Steam lobbies in the game).
+struct FakeLobbies : en::LobbyService {
+    std::shared_ptr<en::LobbyEvents> events;
+    std::vector<std::string> calls;
+    void Start(std::shared_ptr<en::LobbyEvents> e) override { events = e; calls.push_back("start"); }
+    void Enter(const std::string& channel) override { calls.push_back("enter " + channel); }
+    void Say(const std::string& text) override { calls.push_back("say " + text); }
+    void Whisper(uint64_t to, const std::string& text) override { calls.push_back("whisper " + std::to_string(to) + " " + text); }
+    void RefreshChannels() override { calls.push_back("channels"); }
+    void Stop() override { calls.push_back("stop"); }
+    void Push(en::LobbyEvent::Kind k, uint64_t id = 0, const std::string& name = "", const std::string& text = "") {
+        en::LobbyEvent e;
+        e.kind = k;
+        e.member.id = id;
+        e.member.name = name;
+        e.text = text;
+        events->Push(e);
+    }
+};
+
+static void TestOnline() {
+    FakeClient c;
+    en::SessionConfig cfg;
+    cfg.accountNick = "Wojtek";
+    FakeLobbies lobbies;
+    en::NoRanking ranking;
+    int64_t now = 1000;
+    auto backend = std::make_unique<en::OnlineBackend>(lobbies, ranking, [&] { return now; });
+    en::MemoryStore store;
+    en::Session s(cfg, *backend, store, [&](const uint8_t* p, size_t n) { c.in.insert(c.in.end(), p, p + n); }, nullptr);
+    en::Writer info;
+    info.raw("x", 1);
+    auto pkt = GamePacket(info);
+    s.OnData(pkt.data(), pkt.size());
+    en::Writer login;
+    login.str("Wojtek");
+    login.str("");
+    login.u32(0);
+    login.u32(0);
+    login.u32(0);
+    uint8_t zero[16] = {0};
+    login.raw(zero, 16);
+    pkt = GamePacket(login);
+    CHECK(s.OnData(pkt.data(), pkt.size()) && s.LoggedIn());
+    std::vector<uint8_t> body;
+    c.TakePacket(body);
+    c.TakePacket(body);
+    c.TakeLines();
+    CHECK(lobbies.calls.size() == 3 && lobbies.calls[0] == "start" && lobbies.calls[1] == "enter KnightShift" &&
+          lobbies.calls[2] == "channels");
+    c.lines.clear();
+    auto has = [&](const std::string& l) { return std::find(c.lines.begin(), c.lines.end(), l) != c.lines.end(); };
+
+    // typed before the lobby answered: sent when it does
+    std::string early = "/msg \"#KnightShift\" \"pierwsza\"";
+    early.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)early.data(), early.size()));
+    CHECK(std::find(lobbies.calls.begin(), lobbies.calls.end(), "say pierwsza") == lobbies.calls.end());
+    c.TakeLines();
+    c.lines.clear();
+
+    // the lobby answers: two others in the channel, one with the same Steam name as ours... not a
+    // problem for the game; two others with the same name get told apart
+    en::LobbyEvent entered;
+    entered.kind = en::LobbyEvent::ENTERED;
+    entered.channel = "KnightShift";
+    entered.members = {{11, "Ania"}, {12, "Bolek"}, {13, "Bolek"}};
+    lobbies.events->Push(entered);
+    s.Poll();
+    c.TakeLines();
+    CHECK(has("$user \"Ania\" 0 \"\" \"00000000-0000-0000-0000-000000000000\""));
+    CHECK(has("$user \"Bolek\" 0 \"\" \"00000000-0000-0000-0000-000000000000\""));
+    CHECK(has("$user \"Bolek#2\" 0 \"\" \"00000000-0000-0000-0000-000000000000\""));
+    CHECK(has("/syncstats 4 4 1 0 0 0 0"));
+    CHECK(std::find(lobbies.calls.begin(), lobbies.calls.end(), "say pierwsza") != lobbies.calls.end());
+    c.lines.clear();
+
+    // chat both ways, whispers by name
+    lobbies.Push(en::LobbyEvent::SAY, 11, "Ania", "czesc");
+    lobbies.Push(en::LobbyEvent::WHISPER, 13, "Bolek", "psst");
+    s.Poll();
+    c.TakeLines();
+    CHECK(has("/send \"Ania\" \"czesc\""));
+    CHECK(has("/msg 0 \"Bolek#2\" 0 \"psst\""));
+    c.lines.clear();
+    std::string l = "/msg \"#KnightShift\" \"hej\"";
+    l.push_back('\0');
+    l += "/msg \"Bolek#2\" \"tajne\"";
+    l.push_back('\0');
+    l += "/msg \"Nikt\" \"halo\"";
+    l.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)l.data(), l.size()));
+    c.TakeLines();
+    CHECK(has("/send \"Wojtek\" \"hej\"") && has("/msgc \"Bolek#2\" \"tajne\""));
+    CHECK(std::find(lobbies.calls.begin(), lobbies.calls.end(), "say hej") != lobbies.calls.end());
+    CHECK(std::find(lobbies.calls.begin(), lobbies.calls.end(), "whisper 13 tajne") != lobbies.calls.end());
+    CHECK(c.lines.size() == 3 && c.lines[2].find("Nikt") != std::string::npos); // not in the channel
+    c.lines.clear();
+
+    // someone leaves, someone comes
+    lobbies.Push(en::LobbyEvent::LEFT, 12);
+    lobbies.Push(en::LobbyEvent::JOINED, 14, "Cezary");
+    s.Poll();
+    c.TakeLines();
+    CHECK(has("&user \"Bolek\" \"\"") && has("$user \"Cezary\" 0 \"\" \"00000000-0000-0000-0000-000000000000\""));
+    c.lines.clear();
+
+    // the channel list; back from a game room lists the others again without a new lobby
+    en::LobbyEvent chans;
+    chans.kind = en::LobbyEvent::CHANNELS;
+    chans.channels = {"KnightShift", "Polanie"};
+    lobbies.events->Push(chans);
+    s.Poll();
+    c.TakeLines();
+    CHECK(has("$channel \"Polanie\" 0 0 \"\"") && has("/syncstats 4 4 2 0 0 0 0"));
+    c.lines.clear();
+    size_t before = lobbies.calls.size();
+    l = "/join \"KnightShift\" \"\"";
+    l.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)l.data(), l.size()));
+    c.TakeLines();
+    CHECK(lobbies.calls.size() == before && has("$user \"Cezary\" 0 \"\" \"00000000-0000-0000-0000-000000000000\""));
+    c.lines.clear();
+
+    // another channel: a new lobby, the old players go
+    l = "/join \"Polanie\" \"\"";
+    l.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)l.data(), l.size()));
+    CHECK(lobbies.calls.back() == "enter Polanie");
+    lobbies.Push(en::LobbyEvent::SAY, 11, "Ania", "stary kanal"); // Ania is not in Polanie
+    entered.channel = "KnightShift";                              // a late answer for the old channel
+    lobbies.events->Push(entered);
+    s.Poll();
+    c.TakeLines();
+    CHECK(!has("$user \"Ania\" 0 \"\" \"00000000-0000-0000-0000-000000000000\""));
+    c.lines.clear();
+
+    // a quiet minute refreshes the channel list; logging out leaves the lobby
+    now += 61;
+    s.Poll();
+    CHECK(lobbies.calls.back() == "channels");
+    s.OnClosed();
+    CHECK(lobbies.calls.back() == "stop");
+    backend.reset();
+    CHECK(std::count(lobbies.calls.begin(), lobbies.calls.end(), "stop") == 1);
+}
+
 int main() {
     TestZlib();
     TestSignature();
@@ -567,6 +714,7 @@ int main() {
     TestSteamNames();
     TestRanking();
     TestSteamAccount();
+    TestOnline();
     printf(g_fail ? "%d FAILED\n" : "all tests passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

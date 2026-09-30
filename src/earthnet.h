@@ -13,6 +13,7 @@ struct SteamNetSettings {
     bool trace = false;              // log every line exchanged with the game
     bool ranking = true;             // ranking on Steam leaderboards (needs the Steam transport)
     bool steamLogin = true;          // log in with the Steam account name (no login window)
+    bool online = true;              // channels, players and chat shared through Steam lobbies
 };
 
 void SteamNet_LoadConfig(const char* iniPath, SteamNetSettings& s);
@@ -31,8 +32,10 @@ struct SteamNetGameAddrs {
 bool SteamNet_Install(const SteamNetSettings& s, const SteamNetGameAddrs& game);
 
 // Where the ranking is kept (Steam leaderboards); without it the ranking stays empty.
-namespace en { class RankingService; }
+namespace en { class RankingService; class LobbyService; }
 void SteamNet_SetRanking(en::RankingService* r);
+// Channels, players and chat shared through Steam lobbies; without it SteamNet is offline.
+void SteamNet_SetLobbies(en::LobbyService* l);
 // The Steam account SteamNet logs in with: name in the game's ANSI code page ("" = Steam not
 // available) and the SteamID, which keys saved RPG heroes so a new Steam name keeps them.
 struct SteamNetAccount {

@@ -30,7 +30,7 @@
 
 #pragma comment(lib, "winmm.lib")
 
-#define KSNETFIX_VERSION "2.5.10"
+#define KSNETFIX_VERSION "2.6.0"
 
 // ---------------------------------------------------------------------------
 // Per-build addresses (all verified by signature before use)
@@ -1207,6 +1207,9 @@ static void Install() {
             SteamNet_Install(cfg.steamNet, g) ? "ok" : "FAILED");
         bool ranking = cfg.steamNet.ranking && cfg.steam.enabled && !cfg.steam.gameServer;
         if (ranking) SteamNet_SetRanking(Steam_Ranking());
+        bool online = cfg.steamNet.online && cfg.steam.enabled && !cfg.steam.gameServer;
+        if (online) SteamNet_SetLobbies(Steam_Lobbies());
+        Log("steamnet channels: %s", online ? "Steam lobbies (online)" : "offline");
         bool steamLogin = cfg.steamNet.steamLogin && cfg.steam.enabled && !cfg.steam.gameServer && g.client;
         if (steamLogin) SteamNet_SetAccount([] {
             SteamNetAccount a;

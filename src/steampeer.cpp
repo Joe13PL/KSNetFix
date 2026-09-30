@@ -297,6 +297,10 @@ class SteamService {
 };
 
 SteamService* g_svc;
+class SteamLobbies;
+SteamLobbies* g_lobbies; // SteamNet channels (Steam thread only)
+bool LobbyMember(uint64_t id);
+void LobbiesTick();
 
 // ---------------------------------------------------------------------------
 // The IDirectPlay8Peer replacement
@@ -1623,6 +1627,7 @@ void SteamService::OnSessionRequest(SteamNetworkingMessagesSessionRequest_t* r) 
         Lock l(&cs);
         if (peer && (peer->st == St::Hosting || peer->FindSteam(s) || peer->hostSteam == s)) ok = true;
     }
+    if (!ok && LobbyMember(s)) ok = true; // a whisper from a player in our SteamNet channel
     if (ok) NM()->AcceptSessionWithUser(r->m_identityRemote);
 }
 
@@ -1730,6 +1735,7 @@ void SteamService::Run() {
             }
         }
         if (p) p->Tick();
+        LobbiesTick();
         for (;;) {
             std::function<void()> f;
             {
@@ -1992,6 +1998,297 @@ class SteamRanking : public en::RankingService {
     }
 };
 
+// ---------------------------------------------------------------------------
+// SteamNet channels on Steam lobbies. Each channel is an invisible lobby (Steam allows one normal
+// lobby - the game session above - and two invisible ones at a time) tagged ksnet=chan1. Members
+// are the channel's players, lobby chat messages ("S" + text) its chat; whispers go player to
+// player with Steam Networking Messages on their own channel. Everything runs on the Steam thread.
+// ---------------------------------------------------------------------------
+const char* kChanKey = "ksnet";
+const char* kChanVer = "chan1";
+const int kWhisperChannel = 8;
+
+std::string Lower(std::string s) {
+    for (char& c : s) c = (char)tolower((unsigned char)c);
+    return s;
+}
+
+class SteamLobbies {
+  public:
+    std::shared_ptr<en::LobbyEvents> events;
+    uint64_t lobby = 0;     // the channel lobby we are in
+    std::string want;       // the channel we are entering / in
+    uint32_t seq = 0;       // bumped by every Enter: late answers are dropped
+    std::map<uint64_t, bool> unnamed; // members whose Steam name was not known yet
+
+    CCallResult<SteamLobbies, LobbyMatchList_t> crFind, crList;
+    CCallResult<SteamLobbies, LobbyEnter_t> crEnter;
+    CCallResult<SteamLobbies, LobbyCreated_t> crCreate;
+    uint32_t findSeq = 0, enterSeq = 0, createSeq = 0;
+    STEAM_CALLBACK(SteamLobbies, OnChatUpdate, LobbyChatUpdate_t);
+    STEAM_CALLBACK(SteamLobbies, OnChatMsg, LobbyChatMsg_t);
+    STEAM_CALLBACK(SteamLobbies, OnPersona, PersonaStateChange_t);
+
+    void Push(en::LobbyEvent e) {
+        if (events) events->Push(std::move(e));
+    }
+    en::LobbyMember Member(uint64_t id) {
+        en::LobbyMember m;
+        m.id = id;
+        const char* n = SteamFriends()->GetFriendPersonaName(CSteamID(id));
+        if (!n || !*n || strcmp(n, "[unknown]") == 0) {
+            unnamed[id] = true;
+            SteamFriends()->RequestUserInformation(CSteamID(id), true);
+        } else {
+            m.name = en::SanitizeNick(Ansi(n));
+        }
+        if (m.name.empty()) {
+            char buf[32];
+            sprintf(buf, "Gracz %05u", (unsigned)(id % 100000));
+            m.name = buf;
+        }
+        return m;
+    }
+    void Fail(const char* why) {
+        Log("steamnet: channel \"%s\": %s", want.c_str(), why);
+        en::LobbyEvent e;
+        e.kind = en::LobbyEvent::ENTER_FAILED;
+        e.channel = want;
+        Push(e);
+    }
+    void Leave() {
+        if (lobby) SteamMatchmaking()->LeaveLobby(CSteamID(lobby));
+        lobby = 0;
+        unnamed.clear();
+    }
+
+    void Enter(const std::string& channel) {
+        Leave();
+        want = channel;
+        seq++;
+        ISteamMatchmaking* mm = SteamMatchmaking();
+        mm->AddRequestLobbyListStringFilter(kChanKey, kChanVer, k_ELobbyComparisonEqual);
+        mm->AddRequestLobbyListStringFilter("chan", Lower(channel).c_str(), k_ELobbyComparisonEqual);
+        mm->AddRequestLobbyListDistanceFilter(k_ELobbyDistanceFilterWorldwide);
+        mm->AddRequestLobbyListResultCountFilter(10);
+        findSeq = seq;
+        crFind.Set(mm->RequestLobbyList(), this, &SteamLobbies::OnFind);
+    }
+    void OnFind(LobbyMatchList_t* r, bool io) {
+        if (findSeq != seq) return;
+        if (io) return Fail("lobby search failed");
+        ISteamMatchmaking* mm = SteamMatchmaking();
+        uint64_t best = 0;
+        int bestN = -1;
+        for (uint32 i = 0; i < r->m_nLobbiesMatching; i++) { // two lobbies for one channel: the fuller one
+            CSteamID id = mm->GetLobbyByIndex((int)i);
+            int n = mm->GetNumLobbyMembers(id);
+            if (n > bestN || (n == bestN && id.ConvertToUint64() < best)) best = id.ConvertToUint64(), bestN = n;
+        }
+        if (best) {
+            Log("steamnet: channel \"%s\": joining lobby %llu (%d players)", want.c_str(), (unsigned long long)best, bestN);
+            enterSeq = seq;
+            crEnter.Set(mm->JoinLobby(CSteamID(best)), this, &SteamLobbies::OnEnter);
+        } else {
+            Log("steamnet: channel \"%s\": new lobby", want.c_str());
+            createSeq = seq;
+            crCreate.Set(mm->CreateLobby(k_ELobbyTypeInvisible, 250), this, &SteamLobbies::OnCreate);
+        }
+    }
+    void OnCreate(LobbyCreated_t* r, bool io) {
+        if (createSeq != seq) {
+            if (!io && r->m_eResult == k_EResultOK) SteamMatchmaking()->LeaveLobby(CSteamID(r->m_ulSteamIDLobby));
+            return;
+        }
+        if (io || r->m_eResult != k_EResultOK) return Fail("cannot create the lobby");
+        lobby = r->m_ulSteamIDLobby;
+        ISteamMatchmaking* mm = SteamMatchmaking();
+        mm->SetLobbyData(CSteamID(lobby), kChanKey, kChanVer);
+        mm->SetLobbyData(CSteamID(lobby), "chan", Lower(want).c_str());
+        mm->SetLobbyData(CSteamID(lobby), "name", want.c_str());
+        Entered();
+    }
+    void OnEnter(LobbyEnter_t* r, bool io) {
+        if (enterSeq != seq) {
+            if (!io) SteamMatchmaking()->LeaveLobby(CSteamID(r->m_ulSteamIDLobby));
+            return;
+        }
+        if (io || r->m_EChatRoomEnterResponse != k_EChatRoomEnterResponseSuccess) return Fail("cannot join the lobby");
+        lobby = r->m_ulSteamIDLobby;
+        Entered();
+    }
+    void Entered() {
+        ISteamMatchmaking* mm = SteamMatchmaking();
+        en::LobbyEvent e;
+        e.kind = en::LobbyEvent::ENTERED;
+        e.channel = want;
+        int n = mm->GetNumLobbyMembers(CSteamID(lobby));
+        for (int i = 0; i < n; i++) {
+            uint64_t id = mm->GetLobbyMemberByIndex(CSteamID(lobby), i).ConvertToUint64();
+            if (id != g_svc->me) e.members.push_back(Member(id));
+        }
+        Log("steamnet: channel \"%s\": in lobby %llu with %d other players", want.c_str(), (unsigned long long)lobby,
+            (int)e.members.size());
+        Push(e);
+    }
+
+    void Say(const std::string& text) {
+        if (!lobby) return;
+        std::string m = "S" + text;
+        SteamMatchmaking()->SendLobbyChatMsg(CSteamID(lobby), m.data(), (int)m.size() + 1);
+    }
+    void Whisper(uint64_t to, const std::string& text) {
+        std::string m = "W" + text;
+        SteamNetworkingIdentity id;
+        id.SetSteamID64(to);
+        Lock l(&g_svc->sendCs);
+        NM()->SendMessageToUser(id, m.data(), (uint32)m.size(), k_nSteamNetworkingSend_Reliable | k_nSteamNetworkingSend_AutoRestartBrokenSession,
+                                kWhisperChannel);
+    }
+    void Tick() {
+        SteamNetworkingMessage_t* msgs[16];
+        int n = NM()->ReceiveMessagesOnChannel(kWhisperChannel, msgs, 16);
+        for (int i = 0; i < n; i++) {
+            const char* d = (const char*)msgs[i]->m_pData;
+            size_t k = (size_t)msgs[i]->m_cbSize;
+            if (k > 1 && d[0] == 'W') {
+                en::LobbyEvent e;
+                e.kind = en::LobbyEvent::WHISPER;
+                e.member = Member(msgs[i]->m_identityPeer.GetSteamID64());
+                e.text.assign(d + 1, strnlen(d + 1, k - 1));
+                Push(e);
+            }
+            msgs[i]->Release();
+        }
+    }
+    void RefreshChannels() {
+        ISteamMatchmaking* mm = SteamMatchmaking();
+        mm->AddRequestLobbyListStringFilter(kChanKey, kChanVer, k_ELobbyComparisonEqual);
+        mm->AddRequestLobbyListDistanceFilter(k_ELobbyDistanceFilterWorldwide);
+        mm->AddRequestLobbyListResultCountFilter(50);
+        crList.Set(mm->RequestLobbyList(), this, &SteamLobbies::OnList);
+    }
+    void OnList(LobbyMatchList_t* r, bool io) {
+        if (io) return;
+        ISteamMatchmaking* mm = SteamMatchmaking();
+        en::LobbyEvent e;
+        e.kind = en::LobbyEvent::CHANNELS;
+        std::vector<std::string> seen;
+        for (uint32 i = 0; i < r->m_nLobbiesMatching; i++) {
+            CSteamID id = mm->GetLobbyByIndex((int)i);
+            std::string name = en::SanitizeNick(mm->GetLobbyData(id, "name"));
+            if (name.empty() || std::find(seen.begin(), seen.end(), Lower(name)) != seen.end()) continue;
+            seen.push_back(Lower(name));
+            e.channels.push_back(name);
+        }
+        if (!want.empty() && std::find(seen.begin(), seen.end(), Lower(want)) == seen.end()) e.channels.push_back(want);
+        Push(e);
+    }
+    void Stop() {
+        Leave();
+        want.clear();
+        seq++;
+        events.reset();
+    }
+};
+
+void SteamLobbies::OnChatUpdate(LobbyChatUpdate_t* p) {
+    if (!lobby || p->m_ulSteamIDLobby != lobby || p->m_ulSteamIDUserChanged == g_svc->me) return;
+    en::LobbyEvent e;
+    e.member.id = p->m_ulSteamIDUserChanged;
+    if (p->m_rgfChatMemberStateChange & k_EChatMemberStateChangeEntered) {
+        e.kind = en::LobbyEvent::JOINED;
+        e.member = Member(e.member.id);
+    } else {
+        e.kind = en::LobbyEvent::LEFT; // left, disconnected, kicked, banned
+        unnamed.erase(e.member.id);
+    }
+    Push(e);
+}
+
+void SteamLobbies::OnChatMsg(LobbyChatMsg_t* p) {
+    if (!lobby || p->m_ulSteamIDLobby != lobby) return;
+    char buf[4096];
+    CSteamID from;
+    EChatEntryType type;
+    int n = SteamMatchmaking()->GetLobbyChatEntry(CSteamID(lobby), (int)p->m_iChatID, &from, buf, sizeof(buf) - 1, &type);
+    if (n <= 1 || type != k_EChatEntryTypeChatMsg || from.ConvertToUint64() == g_svc->me || buf[0] != 'S') return;
+    buf[n] = 0;
+    en::LobbyEvent e;
+    e.kind = en::LobbyEvent::SAY;
+    e.member = Member(from.ConvertToUint64());
+    e.text.assign(buf + 1, strnlen(buf + 1, (size_t)n - 1));
+    Push(e);
+}
+
+void SteamLobbies::OnPersona(PersonaStateChange_t* p) {
+    // a member's Steam name arrived: list them again under it
+    auto it = unnamed.find(p->m_ulSteamID);
+    if (it == unnamed.end() || !(p->m_nChangeFlags & k_EPersonaChangeName)) return;
+    unnamed.erase(it);
+    en::LobbyEvent left;
+    left.kind = en::LobbyEvent::LEFT;
+    left.member.id = p->m_ulSteamID;
+    Push(left);
+    en::LobbyEvent joined;
+    joined.kind = en::LobbyEvent::JOINED;
+    joined.member = Member(p->m_ulSteamID);
+    Push(joined);
+}
+
+bool LobbyMember(uint64_t id) {
+    // Steam thread (session requests are callbacks)
+    if (!g_lobbies || !g_lobbies->lobby) return false;
+    ISteamMatchmaking* mm = SteamMatchmaking();
+    int n = mm->GetNumLobbyMembers(CSteamID(g_lobbies->lobby));
+    for (int i = 0; i < n; i++)
+        if (mm->GetLobbyMemberByIndex(CSteamID(g_lobbies->lobby), i).ConvertToUint64() == id) return true;
+    return false;
+}
+
+void LobbiesTick() {
+    if (g_lobbies) g_lobbies->Tick();
+}
+
+// The LobbyService SteamNet talks to (any thread): every call runs on the Steam thread.
+class SteamLobbyService : public en::LobbyService {
+  public:
+    void Start(std::shared_ptr<en::LobbyEvents> events) override {
+        if (!Run([events] { g_lobbies->events = events; })) {
+            en::LobbyEvent e;
+            e.kind = en::LobbyEvent::ENTER_FAILED;
+            events->Push(e);
+        }
+        started_ = events;
+    }
+    void Enter(const std::string& channel) override {
+        if (!Run([channel] { g_lobbies->Enter(channel); }) && started_) {
+            en::LobbyEvent e;
+            e.kind = en::LobbyEvent::ENTER_FAILED;
+            e.channel = channel;
+            started_->Push(e);
+        }
+    }
+    void Say(const std::string& text) override { Run([text] { g_lobbies->Say(text); }); }
+    void Whisper(uint64_t to, const std::string& text) override { Run([to, text] { g_lobbies->Whisper(to, text); }); }
+    void RefreshChannels() override { Run([] { g_lobbies->RefreshChannels(); }); }
+    void Stop() override {
+        Run([] { g_lobbies->Stop(); });
+        started_.reset();
+    }
+
+  private:
+    std::shared_ptr<en::LobbyEvents> started_;
+    static bool Run(std::function<void()> f) {
+        if (!S.enabled || !EnsureSteam() || g_gs) return false;
+        g_svc->Post([f] {
+            if (!g_lobbies) g_lobbies = new SteamLobbies; // callbacks register on the Steam thread
+            f();
+        });
+        return true;
+    }
+};
+
 } // namespace
 
 HRESULT __stdcall Steam_CoCreateInstance(REFCLSID clsid, LPUNKNOWN outer, DWORD ctx, REFIID riid, LPVOID* ppv) {
@@ -2026,4 +2323,9 @@ std::string Steam_AccountName() {
         nick = buf;
     }
     return nick;
+}
+
+en::LobbyService* Steam_Lobbies() {
+    static SteamLobbyService l;
+    return &l;
 }

@@ -584,8 +584,9 @@ void Session::GameUpdated(const std::string& name, int players, int maxPlayers, 
 }
 void Session::GameRemoved(const std::string& name) { Line("&play " + Quote(name)); }
 void Session::Stats(int players, int allPlayers, int games, int allGames, int channels) {
+    // 0x8239A0 shows "players b/a, games e/(d+e), channels c" for /syncstats a b c d e f g
     char buf[96];
-    snprintf(buf, sizeof(buf), "/syncstats %d %d %d %d %d 0 0", players, allPlayers, games, allGames, channels);
+    snprintf(buf, sizeof(buf), "/syncstats %d %d %d %d %d 0 0", allPlayers, players, channels, allGames - games, games);
     Line(buf);
 }
 
@@ -750,6 +751,10 @@ bool RankingSetNick(std::vector<int32_t>& details, const std::string& nick) {
 
 void RankedBackend::OnLogin(Session& s) {
     LocalBackend::OnLogin(s);
+    JoinRanking(s);
+}
+
+void RankedBackend::JoinRanking(Session& s) {
     // A new player shows up on the all-time board with 0 points; "last game" = first login.
     std::string nick = s.PublicName();
     ranking_.Join(RankingBoard(LADDER_ALL, now_()), 0, RankingDetails(nick, 0, 0, 0, now_()),
@@ -764,6 +769,179 @@ std::vector<LadderRow> RankedBackend::OnLadder(Session& s, LadderPeriod period) 
     if (ranking_.Top(RankingBoard(period, now_()), period == LADDER_ALL, 10, top))
         for (const BoardEntry& e : top) rows.push_back(RankingRow(e));
     return rows;
+}
+
+// ---------------------------------------------------------------------------
+// Online channels
+
+OnlineBackend::OnlineBackend(LobbyService& lobbies, RankingService& ranking, std::function<int64_t()> now)
+    : RankedBackend(ranking, now), lobbies_(lobbies), events_(std::make_shared<LobbyEvents>()), now_(std::move(now)) {}
+
+OnlineBackend::~OnlineBackend() {
+    if (started_) lobbies_.Stop();
+}
+
+void OnlineBackend::OnLogin(Session& s) {
+    JoinRanking(s);
+    lobbies_.Start(events_);
+    started_ = true;
+    channel_ = s.Channel();
+    channels_.push_back(channel_);
+    s.ChannelAdded(channel_, "SteamNet");
+    Stats(s);
+    s.ChannelMessage("SteamNet", "Laczenie z kanalem przez Steam...");
+    lobbies_.Enter(channel_);
+    lobbies_.RefreshChannels();
+    lastRefresh_ = now_();
+}
+
+void OnlineBackend::OnJoin(Session& s, const std::string& channel, const std::string& password) {
+    (void)password;
+    if (channel.empty()) return;
+    if (std::find(channels_.begin(), channels_.end(), channel) == channels_.end()) {
+        channels_.push_back(channel);
+        s.ChannelAdded(channel, "");
+    }
+    // /join also comes when the player leaves a game room: the games are over
+    for (const std::string& g : games_) s.GameRemoved(g);
+    games_.clear();
+    s.EnteredChannel(channel, ""); // clears the client's player list; it lists itself again
+    if (channel == channel_ && entered_) {
+        for (const auto& m : members_) s.UserEntered(m.second); // back from a game room
+    } else {
+        channel_ = channel;
+        entered_ = false;
+        members_.clear();
+        lobbies_.Enter(channel);
+    }
+    Stats(s);
+}
+
+void OnlineBackend::OnSay(Session& s, const std::string& text) {
+    s.ChannelMessage(s.PublicName(), text); // our own lobby messages are not echoed back
+    if (entered_)
+        lobbies_.Say(text);
+    else
+        pendingSay_.push_back(text);
+}
+
+void OnlineBackend::OnWhisper(Session& s, const std::string& to, const std::string& text) {
+    if (to == s.PublicName() || to == s.Nick()) {
+        s.WhisperTo(to, text);
+        s.WhisperFrom(s.PublicName(), text);
+        return;
+    }
+    for (const auto& m : members_)
+        if (m.second == to) {
+            lobbies_.Whisper(m.first, text);
+            s.WhisperTo(to, text);
+            return;
+        }
+    s.ChannelMessage("SteamNet", "Gracza " + to + " nie ma na tym kanale.");
+}
+
+void OnlineBackend::OnLogout(Session& s) {
+    (void)s;
+    if (started_) lobbies_.Stop();
+    started_ = false;
+}
+
+void OnlineBackend::OnGameHosted(Session& s, const std::string& name, const std::string& guid) {
+    if (std::find(games_.begin(), games_.end(), name) == games_.end()) games_.push_back(name);
+    s.GameAdded(name, 0, guid);
+    Stats(s);
+}
+
+void OnlineBackend::Poll(Session& s) {
+    if (!started_) return;
+    for (const LobbyEvent& e : events_->Take()) Apply(s, e);
+    if (now_() - lastRefresh_ >= 60) { // the channel list: new channels, empty ones gone
+        lastRefresh_ = now_();
+        lobbies_.RefreshChannels();
+    }
+}
+
+std::string OnlineBackend::UniqueName(const std::string& name, uint64_t id) const {
+    // Steam names are not unique; the game lists players by name
+    std::string base = name.empty() ? "Gracz" : name, n = base;
+    for (int k = 2;; k++) {
+        bool taken = false;
+        for (const auto& m : members_)
+            if (m.first != id && m.second == n) taken = true;
+        if (!taken) return n;
+        std::string suffix = "#" + std::to_string(k);
+        n = base.substr(0, 16 - suffix.size()) + suffix;
+    }
+}
+
+void OnlineBackend::AddMember(Session& s, const LobbyMember& m) {
+    std::string name = UniqueName(m.name, m.id);
+    members_[m.id] = name;
+    s.UserEntered(name);
+}
+
+void OnlineBackend::Apply(Session& s, const LobbyEvent& e) {
+    switch (e.kind) {
+    case LobbyEvent::ENTERED:
+        if (e.channel != channel_) return; // an older request
+        entered_ = true;
+        members_.clear();
+        for (const LobbyMember& m : e.members) AddMember(s, m);
+        for (const std::string& t : pendingSay_) lobbies_.Say(t);
+        pendingSay_.clear();
+        s.ChannelMessage("SteamNet", e.members.empty() ? "Kanal " + channel_ + ": nikogo wiecej tu nie ma."
+                                                       : "Kanal " + channel_ + ": polaczono.");
+        Stats(s);
+        break;
+    case LobbyEvent::ENTER_FAILED:
+        if (e.channel != channel_) return;
+        s.ChannelMessage("SteamNet", "Nie mozna polaczyc z kanalem " + e.channel + " przez Steam.");
+        break;
+    case LobbyEvent::JOINED:
+        if (!entered_ || members_.count(e.member.id)) return;
+        AddMember(s, e.member);
+        Stats(s);
+        break;
+    case LobbyEvent::LEFT: {
+        auto it = members_.find(e.member.id);
+        if (it == members_.end()) return;
+        s.UserLeft(it->second);
+        members_.erase(it);
+        Stats(s);
+        break;
+    }
+    case LobbyEvent::SAY: {
+        auto it = members_.find(e.member.id);
+        s.ChannelMessage(it != members_.end() ? it->second : UniqueName(e.member.name, e.member.id), e.text);
+        break;
+    }
+    case LobbyEvent::WHISPER: {
+        auto it = members_.find(e.member.id);
+        s.WhisperFrom(it != members_.end() ? it->second : SanitizeNick(e.member.name), e.text);
+        break;
+    }
+    case LobbyEvent::CHANNELS:
+        for (const std::string& c : e.channels)
+            if (std::find(channels_.begin(), channels_.end(), c) == channels_.end()) {
+                channels_.push_back(c);
+                s.ChannelAdded(c, "");
+            }
+        for (auto it = channels_.begin(); it != channels_.end();) {
+            if (*it != channel_ && std::find(e.channels.begin(), e.channels.end(), *it) == e.channels.end()) {
+                s.ChannelRemoved(*it); // nobody there any more
+                it = channels_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        Stats(s);
+        break;
+    }
+}
+
+void OnlineBackend::Stats(Session& s) {
+    int players = 1 + (int)members_.size();
+    s.Stats(players, players, (int)games_.size(), (int)games_.size(), (int)channels_.size());
 }
 
 bool MemoryStore::Load(const std::string& nick, const std::string& key, std::vector<uint8_t>& data) {

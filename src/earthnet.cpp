@@ -36,6 +36,7 @@ namespace {
 SteamNetSettings S;
 SteamNetGameAddrs A;
 en::RankingService* g_ranking;
+en::LobbyService* g_lobbies;
 SteamNetAccount (*g_accountFn)();
 SteamNetAccount g_account;    // Steam account the game logs in with (set in our connect())
 std::string g_previousLogin;  // the game's own login it replaces
@@ -200,8 +201,13 @@ DWORD WINAPI ConnectionThread(void* param) {
     LeaveCriticalSection(&g_cs);
     cfg.beforeHello = [] { InstallSteamLogin(); };
     std::unique_ptr<en::Backend> backendPtr;
-    if (g_ranking && S.ranking)
-        backendPtr.reset(new en::RankedBackend(*g_ranking, [] { return (int64_t)time(nullptr); }));
+    static en::NoRanking noRanking;
+    en::RankingService& ranking = g_ranking && S.ranking ? *g_ranking : noRanking;
+    auto now = [] { return (int64_t)time(nullptr); };
+    if (g_lobbies && S.online)
+        backendPtr.reset(new en::OnlineBackend(*g_lobbies, ranking, now));
+    else if (g_ranking && S.ranking)
+        backendPtr.reset(new en::RankedBackend(*g_ranking, now));
     else
         backendPtr.reset(new en::LocalBackend);
     en::Backend& backend = *backendPtr;
@@ -220,10 +226,20 @@ DWORD WINAPI ConnectionThread(void* param) {
     Log("steamnet: game connected");
     char buf[4096];
     for (;;) {
-        int k = recv(c, buf, sizeof(buf), 0);
-        if (k <= 0) break;
-        if (S.trace) Log("steamnet: << %s", Printable((const uint8_t*)buf, (size_t)k).c_str());
-        if (!session.OnData((const uint8_t*)buf, (size_t)k)) break;
+        // wake up every 100 ms: players, chat and channels from Steam arrive in between
+        fd_set rd;
+        FD_ZERO(&rd);
+        FD_SET(c, &rd);
+        timeval tv = {0, 100000};
+        int ready = select(0, &rd, nullptr, nullptr, &tv);
+        if (ready < 0) break;
+        if (ready > 0) {
+            int k = recv(c, buf, sizeof(buf), 0);
+            if (k <= 0) break;
+            if (S.trace) Log("steamnet: << %s", Printable((const uint8_t*)buf, (size_t)k).c_str());
+            if (!session.OnData((const uint8_t*)buf, (size_t)k)) break;
+        }
+        session.Poll();
     }
     session.OnClosed();
     closesocket(c);
@@ -455,9 +471,11 @@ void SteamNet_LoadConfig(const char* ini, SteamNetSettings& s) {
     s.trace = GetPrivateProfileIntA("SteamNet", "Trace", 0, ini) != 0;
     s.ranking = GetPrivateProfileIntA("SteamNet", "Ranking", 1, ini) != 0;
     s.steamLogin = GetPrivateProfileIntA("SteamNet", "SteamLogin", 1, ini) != 0;
+    s.online = GetPrivateProfileIntA("SteamNet", "Online", 1, ini) != 0;
 }
 
 void SteamNet_SetRanking(en::RankingService* r) { g_ranking = r; }
+void SteamNet_SetLobbies(en::LobbyService* l) { g_lobbies = l; }
 void SteamNet_SetAccount(SteamNetAccount (*account)()) { g_accountFn = account; }
 
 bool SteamNet_Install(const SteamNetSettings& s, const SteamNetGameAddrs& game) {

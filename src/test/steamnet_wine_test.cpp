@@ -151,6 +151,18 @@ struct FakeRanking : en::RankingService {
     }
 } g_ranking;
 
+// Stands in for Steam lobbies: events are pushed from this (test) thread, like the Steam thread.
+struct FakeLobbies : en::LobbyService {
+    std::shared_ptr<en::LobbyEvents> events;
+    std::vector<std::string> said;
+    void Start(std::shared_ptr<en::LobbyEvents> e) override { events = e; }
+    void Enter(const std::string&) override {}
+    void Say(const std::string& text) override { said.push_back(text); }
+    void Whisper(uint64_t, const std::string&) override {}
+    void RefreshChannels() override {}
+    void Stop() override {}
+} g_lobbies;
+
 static void SendAll(SOCKET s, const std::vector<uint8_t>& b) { send(s, (const char*)b.data(), (int)b.size(), 0); }
 
 int main() {
@@ -174,6 +186,7 @@ int main() {
     CHECK(SteamNet_Install(st, addrs));
     SteamNet_SetRanking(&g_ranking);
     SteamNet_SetAccount(&SteamAccount);
+    SteamNet_SetLobbies(&g_lobbies);
     CHECK(wcscmp(g_menuString, L"SteamNet") == 0);
 
     // The game loads ws2_32 at start-up and takes every function with GetProcAddress.
@@ -263,6 +276,33 @@ int main() {
     CHECK(RecvLine(s, in, line));
     printf("  line: %s\n", line.c_str());
     CHECK(line == "/send \"Wojtek\" \"czesc\""); // chat shows the Steam account
+    CHECK(g_lobbies.said.empty()); // the channel lobby has not answered yet: held back
+
+    // the channel lobby answers from another thread: the server wakes up and tells the game
+    CHECK(g_lobbies.events != nullptr);
+    if (g_lobbies.events) {
+        en::LobbyEvent e;
+        e.kind = en::LobbyEvent::ENTERED;
+        e.channel = "KnightShift";
+        e.members = {{11, "Ania"}};
+        g_lobbies.events->Push(e);
+        en::LobbyEvent say;
+        say.kind = en::LobbyEvent::SAY;
+        say.member = {11, "Ania"};
+        say.text = "hej";
+        g_lobbies.events->Push(say);
+    }
+    bool sawUser = false, sawSay = false;
+    for (int i = 0; i < 4 && RecvLine(s, in, line); i++) {
+        printf("  line: %s\n", line.c_str());
+        if (line.rfind("$user \"Ania\"", 0) == 0) sawUser = true;
+        if (line == "/send \"Ania\" \"hej\"") {
+            sawSay = true;
+            break;
+        }
+    }
+    CHECK(sawUser && sawSay);
+    CHECK(g_lobbies.said.size() == 1 && g_lobbies.said[0] == "czesc"); // sent once in the lobby
 
     // ranking: the login put Joe on the (fake) Steam board, /ladder shows him
     std::string ladder = "/ladder";

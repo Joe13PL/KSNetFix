@@ -179,6 +179,20 @@ malejąco, liczbowo): `SteamNet` (cały czas), `SteamNet RRRR-MM` (miesiąc), `S
 do `SteamNet` z 0 punktami (tylko gdy go tam nie ma). Tablice miesięczne i tygodniowe są tylko czytane
 (`FindLeaderboard`), dopóki nie ma wyników. Kod: `RankedBackend` (`earthnet_core.cpp`), `SteamRanking` (`steampeer.cpp`).
 
+### Kanały online (lobby Steam)
+
+Kanał SteamNet = **niewidoczne** lobby Steam (`k_ELobbyTypeInvisible`, do 250 osób) z danymi `ksnet=chan1`,
+`chan=<nazwa małymi literami>`, `name=<nazwa>`. Steam pozwala być w jednym zwykłym lobby (sesja gry transportu,
+`ksnf=1`) i dwóch niewidocznych naraz, a wyszukiwanie zwraca też niewidoczne. Wejście: szukanie po `chan`, dołączenie
+do najliczniejszego lobby albo założenie nowego. Członkowie → `$user "nazwa Steam" 0 "" <zerowy guid>` (kolor „inny
+gracz”; nazwy o tej samej treści dostają `#2`, `#3`), wyjście → `&user`. Czat: wiadomość lobby `"S" + tekst` →
+`/send "nazwa" "tekst"`; własne wiadomości nie wracają, więc serwer pokazuje je od razu. Szept: Steam Networking
+Messages, kanał 8, `"W" + tekst` → `/msg 0 "od" 0 "tekst"`; transport przyjmuje sesję od członków kanału. Lista
+kanałów: wyszukiwanie `ksnet=chan1` co 60 s → `$channel` / `&channel`. `/syncstats a b c d e f g` = wszyscy
+gracze, zalogowani, kanały, gry w toku, gry otwarte (`0x8239A0`: „gracze b/a, gry e/(d+e), kanały c”).
+Kod: `OnlineBackend` (`earthnet_core.cpp`), `SteamLobbies` (`steampeer.cpp`); zdarzenia z wątku Steam idą przez
+`LobbyEvents` do wątku połączenia (pętla `select` co 100 ms).
+
 ### Komendy klienta
 
 | linia | kiedy |

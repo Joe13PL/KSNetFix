@@ -7,8 +7,11 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <deque>
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -86,6 +89,8 @@ class Backend {
     virtual void OnGameHosted(Session& s, const std::string& name, const std::string& guid) { (void)s; (void)name; (void)guid; }
     // Ranking tabs; at most 10 rows are shown (the client has room for no more).
     virtual std::vector<LadderRow> OnLadder(Session& s, LadderPeriod period) { (void)s; (void)period; return {}; }
+    // Called often (about 10x a second) on the session's thread: apply what arrived from outside.
+    virtual void Poll(Session& s) { (void)s; }
     // Any other client command, for tracing and later features.
     virtual void OnCommand(Session& s, const std::vector<std::string>& words) { (void)s; (void)words; }
 };
@@ -119,6 +124,7 @@ class Session {
     // Bytes from the game. Returns false when the connection should be closed.
     bool OnData(const uint8_t* p, size_t n);
     void OnClosed();
+    void Poll() { if (LoggedIn()) backend_.Poll(*this); } // call often from the session's thread
 
     const std::string& Nick() const { return nick_; }      // as the game logged in
     const std::string& PublicName() const { return cfg_.accountNick.empty() ? nick_ : cfg_.accountNick; }
@@ -172,6 +178,7 @@ class Session {
 // Offline backend: one channel, the player alone; echoes chat. Stand-in until Steam lobbies.
 class LocalBackend : public Backend {
   public:
+    virtual ~LocalBackend() {}
     void OnLogin(Session& s) override;
     void OnJoin(Session& s, const std::string& channel, const std::string& password) override;
     void OnGameHosted(Session& s, const std::string& name, const std::string& guid) override;
@@ -217,6 +224,9 @@ class RankedBackend : public LocalBackend {
     void OnLogin(Session& s) override;
     std::vector<LadderRow> OnLadder(Session& s, LadderPeriod period) override;
 
+  protected:
+    void JoinRanking(Session& s); // the player shows up on the all-time board
+
   private:
     RankingService& ranking_;
     std::function<int64_t()> now_;
@@ -227,6 +237,86 @@ class MemoryStore : public PlayerStore {
     std::map<std::string, std::vector<uint8_t>> items;
     bool Load(const std::string& nick, const std::string& key, std::vector<uint8_t>& data) override;
     void Save(const std::string& nick, const std::string& key, const std::vector<uint8_t>& data) override;
+};
+
+// ---------------------------------------------------------------------------
+// Online channels on Steam lobbies (steampeer.cpp): one lobby per channel, its members are the
+// channel's players, lobby chat is the channel chat, whispers go straight to one player.
+// The service works on the Steam thread and reports through LobbyEvents; OnlineBackend applies
+// the events on the session's thread in Poll().
+struct LobbyMember {
+    uint64_t id = 0;
+    std::string name; // Steam name as a SteamNet nick (SanitizeNick)
+};
+struct LobbyEvent {
+    enum Kind { ENTERED, ENTER_FAILED, JOINED, LEFT, SAY, WHISPER, CHANNELS } kind = ENTERED;
+    std::string channel, text;
+    LobbyMember member;                // JOINED, LEFT (id), SAY / WHISPER (sender)
+    std::vector<LobbyMember> members;  // ENTERED: everybody else in the channel
+    std::vector<std::string> channels; // CHANNELS: every SteamNet channel
+};
+class LobbyEvents {
+  public:
+    void Push(LobbyEvent e) {
+        std::lock_guard<std::mutex> l(m_);
+        q_.push_back(std::move(e));
+    }
+    std::deque<LobbyEvent> Take() {
+        std::lock_guard<std::mutex> l(m_);
+        std::deque<LobbyEvent> out;
+        out.swap(q_);
+        return out;
+    }
+
+  private:
+    std::mutex m_;
+    std::deque<LobbyEvent> q_;
+};
+class LobbyService {
+  public:
+    virtual ~LobbyService() {}
+    // A new SteamNet connection: events go to `events` until Stop().
+    virtual void Start(std::shared_ptr<LobbyEvents> events) = 0;
+    virtual void Enter(const std::string& channel) = 0; // leaves the channel before
+    virtual void Say(const std::string& text) = 0;
+    virtual void Whisper(uint64_t to, const std::string& text) = 0;
+    virtual void RefreshChannels() = 0;
+    virtual void Stop() = 0; // leaves the channel
+};
+
+class NoRanking : public RankingService {
+  public:
+    bool Top(const std::string&, bool, int, std::vector<BoardEntry>& out) override { out.clear(); return true; }
+    void Join(const std::string&, int, const std::vector<int32_t>&, std::function<bool(std::vector<int32_t>&)>) override {}
+};
+
+class OnlineBackend : public RankedBackend {
+  public:
+    OnlineBackend(LobbyService& lobbies, RankingService& ranking, std::function<int64_t()> now);
+    ~OnlineBackend();
+    void OnLogin(Session& s) override;
+    void OnJoin(Session& s, const std::string& channel, const std::string& password) override;
+    void OnSay(Session& s, const std::string& text) override;
+    void OnWhisper(Session& s, const std::string& to, const std::string& text) override;
+    void OnLogout(Session& s) override;
+    void OnGameHosted(Session& s, const std::string& name, const std::string& guid) override;
+    void Poll(Session& s) override;
+
+  private:
+    void Apply(Session& s, const LobbyEvent& e);
+    void AddMember(Session& s, const LobbyMember& m);
+    std::string UniqueName(const std::string& name, uint64_t id) const;
+    void Stats(Session& s);
+
+    LobbyService& lobbies_;
+    std::shared_ptr<LobbyEvents> events_;
+    std::function<int64_t()> now_;
+    bool started_ = false, entered_ = false;
+    std::string channel_;
+    std::map<uint64_t, std::string> members_; // everybody else in the channel -> shown name
+    std::vector<std::string> channels_, games_;
+    std::vector<std::string> pendingSay_; // typed before the channel lobby answered
+    int64_t lastRefresh_ = 0;
 };
 
 } // namespace en

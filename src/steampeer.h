@@ -19,8 +19,10 @@ void Steam_Configure(const SteamSettings& s, HCoCreate orig);
 HRESULT __stdcall Steam_CoCreateInstance(REFCLSID clsid, LPUNKNOWN outer, DWORD ctx, REFIID riid, LPVOID* ppv);
 
 // SteamNet ranking on Steam leaderboards (see earthnet_core.h).
-namespace en { class RankingService; }
+namespace en { class RankingService; class LobbyService; }
 en::RankingService* Steam_Ranking();
+// SteamNet channels on Steam lobbies.
+en::LobbyService* Steam_Lobbies();
 // The Steam account name as a SteamNet nick ("" when Steam is off) and its SteamID.
 std::string Steam_AccountName();
 unsigned long long Steam_AccountId();
