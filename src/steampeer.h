@@ -2,6 +2,7 @@
 #pragma once
 #include <windows.h>
 #include <unknwn.h>
+#include <string>
 
 struct SteamSettings {
     bool enabled = false;
@@ -20,3 +21,5 @@ HRESULT __stdcall Steam_CoCreateInstance(REFCLSID clsid, LPUNKNOWN outer, DWORD 
 // SteamNet ranking on Steam leaderboards (see earthnet_core.h).
 namespace en { class RankingService; }
 en::RankingService* Steam_Ranking();
+// The Steam account name as a SteamNet nick ("" when Steam is off).
+std::string Steam_AccountName();

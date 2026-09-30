@@ -30,6 +30,19 @@ bajtów ANSI bez zera.
 | K→S | stan 5 (`0x803110`) | `napis login`, `napis hasło`, `u32 0`, `u32 n`, `n × GUID(16)` (lista `+0x5080`), `u32 reconnect`, [jeśli reconnect: `napis`, `napis`, `GUID`, `u32`, `napis`, `u32`], `GUID(16)` (`+0x506C`) |
 | S→K | stan 7 → `0x803820` | odpowiedź na logowanie (niżej); potem stan 0 = linie tekstu |
 
+### Logowanie kontem Steam
+
+Metoda łączenia klienta `0x7FF8D0(host, port, login, hasło)` zapisuje login jako napis Unicode pod `+0x4A80`
+(`{licznik 1, pojemność, długość, znaki, 0}`, pamięć z `Mem_Alloc 0x7971D0`), a dopiero potem woła
+`WSAAsyncGetHostByName` (`0x7FFC50`). Pakiet logowania (`0x803110`) bierze nick z `+0x4A80` (Unicode → ANSI,
+długość z nagłówka napisu). SteamNet w swojej wersji `WSAAsyncGetHostByName` podmienia ten napis na nazwę
+konta Steam (bez `"` i `%`, najwyżej 16 bajtów). Pierwsze połączenie nie ma więc pustego loginu i okno logowania
+się nie pokazuje; gra zapisuje login w profilu gracza. Sprawdzone emulacją `0x7FF8D0`.
+
+Gdy okno logowania jednak się pojawi: drugie słowo komunikatu błędu (`"tekst" "nick"`) trafia do kontrolki
+`0x564` tylko wtedy, gdy okno jest już otwarte (`0x81F9C0`), a komunikat pokazuje się tylko przy zapamiętanym
+loginie — dlatego SteamNet nie opiera logowania Steam na tym oknie.
+
 ### Odpowiedź na logowanie (`0x803820`)
 
 Błąd: `i32 kod≠0`, `napis komunikat` → vfunc `+0x9C(kod, komunikat)`. Klient zostaje w stanie 7 z otwartym połączeniem:

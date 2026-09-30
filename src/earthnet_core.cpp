@@ -420,6 +420,8 @@ bool Session::OnPacket(const uint8_t* p, size_t n) {
     nick_ = li.login;
     channel_ = cfg_.channel;
     Log("login \"%s\"%s", nick_.c_str(), li.reconnect ? " (reconnect)" : "");
+    if (!cfg_.accountNick.empty() && nick_ != cfg_.accountNick)
+        Log("the game logged in as \"%s\", other players see the Steam account \"%s\"", nick_.c_str(), cfg_.accountNick.c_str());
 
     // Login reply (0x803820), field order as the client reads it.
     uint8_t zero16[16] = {0};
@@ -633,6 +635,21 @@ void LocalBackend::OnWhisper(Session& s, const std::string& to, const std::strin
     if (to == s.Nick()) s.WhisperFrom(s.Nick(), text);
 }
 
+std::string SanitizeNick(const std::string& ansi) {
+    std::string out;
+    for (unsigned char ch : ansi) {
+        char c = (char)ch;
+        if (ch < 32 || ch == 127) c = ' ';
+        else if (c == '"') c = '\'';
+        else if (c == '%') c = '_';
+        if (c == ' ' && (out.empty() || out.back() == ' ')) continue;
+        if (out.size() >= 16) break;
+        out += c;
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    return out;
+}
+
 // ---------------------------------------------------------------------------
 // Online ranking
 
@@ -704,7 +721,7 @@ LadderRow RankingRow(const BoardEntry& e) {
 void RankedBackend::OnLogin(Session& s) {
     LocalBackend::OnLogin(s);
     // A new player shows up on the all-time board with 0 points; "last game" = first login.
-    ranking_.Join(RankingBoard(LADDER_ALL, now_()), 0, RankingDetails(s.Nick(), 0, 0, 0, now_()));
+    ranking_.Join(RankingBoard(LADDER_ALL, now_()), 0, RankingDetails(s.PublicName(), 0, 0, 0, now_()));
 }
 
 std::vector<LadderRow> RankedBackend::OnLadder(Session& s, LadderPeriod period) {

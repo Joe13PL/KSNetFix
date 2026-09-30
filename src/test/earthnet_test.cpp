@@ -406,6 +406,15 @@ struct FakeRanking : en::RankingService {
     }
 };
 
+static void TestSteamNames() {
+    CHECK(en::SanitizeNick("Wojtek") == "Wojtek");
+    CHECK(en::SanitizeNick("  Jan \"Kowal\"  100% ") == "Jan 'Kowal' 100_");
+    CHECK(en::SanitizeNick("a\tb\n\x01" "c") == "a b c");
+    CHECK(en::SanitizeNick("Bardzo_dlugi_nick_gracza") == "Bardzo_dlugi_nic");
+    CHECK(en::SanitizeNick("   ") == "");
+    CHECK(en::SanitizeNick("\xa3\xf3" "d\xbf") == "\xa3\xf3" "d\xbf"); // Polish letters (cp1250) stay
+}
+
 static void TestRanking() {
     // board names
     CHECK(en::RankingBoard(en::LADDER_ALL, 1790000000) == "SteamNet");
@@ -435,6 +444,7 @@ static void TestRanking() {
     // backend: login joins the all-time board, /ladder reads it, month/week boards are not created
     FakeClient c;
     en::SessionConfig cfg;
+    cfg.accountNick = "Wojtek"; // Steam account: the ranking shows it whatever the game typed
     FakeRanking ranking;
     en::RankedBackend backend(ranking, [] { return (int64_t)1790812800; });
     en::MemoryStore store;
@@ -453,6 +463,7 @@ static void TestRanking() {
     login.raw(zero, 16);
     pkt = GamePacket(login);
     CHECK(s.OnData(pkt.data(), pkt.size()) && s.LoggedIn());
+    CHECK(s.Nick() == "Test" && s.PublicName() == "Wojtek");
     CHECK(ranking.calls.size() == 1 && ranking.calls[0] == "join SteamNet");
     std::string l = "/ladder";
     l.push_back('\0');
@@ -464,7 +475,7 @@ static void TestRanking() {
     c.TakeLines();
     CHECK(ranking.calls.size() == 3 && ranking.calls[1] == "top SteamNet create" && ranking.calls[2] == "top SteamNet 2026-W40");
     auto ladder = std::find_if(c.lines.begin(), c.lines.end(), [](const std::string& x) { return x.rfind("/ladder ", 0) == 0; });
-    CHECK(ladder != c.lines.end() && *ladder == "/ladder 0 \"Test\" \"46296.000000\" 0 0 0 0 0 0 0");
+    CHECK(ladder != c.lines.end() && *ladder == "/ladder 0 \"Wojtek\" \"46296.000000\" 0 0 0 0 0 0 0");
     CHECK(!c.lines.empty() && c.lines.back() == "/ladderw 0");
 }
 
@@ -473,6 +484,7 @@ int main() {
     TestSignature();
     TestSession();
     TestBadInput();
+    TestSteamNames();
     TestRanking();
     printf(g_fail ? "%d FAILED\n" : "all tests passed\n", g_fail);
     return g_fail ? 1 : 0;

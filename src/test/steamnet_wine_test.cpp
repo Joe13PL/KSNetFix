@@ -68,6 +68,12 @@ static int g_fail = 0;
 
 // "Game" data the hooks look at.
 static wchar_t g_menuString[9] = L"EarthNet";
+// EarthNet client object with the login string at +0x4A80, as 0x7FF8D0 leaves it before resolving
+static uint8_t g_clientObj[0x5200];
+static uint8_t* g_clientPtr = g_clientObj;
+static uint32_t g_oldLogin[8] = {1, 3, 3, 0x006f004a, 0x00000065}; // L"Joe"
+static void* __cdecl GameAlloc(size_t n) { return malloc(n); }
+static std::string SteamAccount() { return "Wojtek"; }
 static uint32_t g_identity[2] = {0x89abcdef, 0x01234567};
 
 static const char kKey[] = "Software\\Reality Pump\\KnightShift\\BaseGame\\Network\\EarthNet";
@@ -146,9 +152,12 @@ int main() {
 
     SteamNetSettings st;
     strcpy(st.welcome, "Witaj w SteamNet (test)");
-    SteamNetGameAddrs addrs = {(uint32_t)(uintptr_t)g_menuString, (uint32_t)(uintptr_t)g_identity};
+    SteamNetGameAddrs addrs = {(uint32_t)(uintptr_t)g_menuString, (uint32_t)(uintptr_t)g_identity,
+                               (uint32_t)(uintptr_t)&g_clientPtr, (uint32_t)(uintptr_t)&GameAlloc};
+    *(uint32_t**)(g_clientObj + 0x4A80) = g_oldLogin;
     CHECK(SteamNet_Install(st, addrs));
     SteamNet_SetRanking(&g_ranking);
+    SteamNet_SetAccount(&SteamAccount);
     CHECK(wcscmp(g_menuString, L"SteamNet") == 0);
 
     // The game loads ws2_32 at start-up and takes every function with GetProcAddress.
@@ -167,6 +176,11 @@ int main() {
     HWND wnd = CreateWindowExA(0, "STATIC", "en", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
     static char hbuf[MAXGETHOSTSTRUCT];
     CHECK(ghbn(wnd, WM_USER + 1, "steam", hbuf, sizeof(hbuf)) != nullptr);
+    {   // the login the game is about to send is now the Steam account
+        uint32_t* login = *(uint32_t**)(g_clientObj + 0x4A80);
+        CHECK(login != g_oldLogin && g_oldLogin[0] == 0);
+        CHECK(login[0] == 1 && login[1] == 6 && login[2] == 6 && wcscmp((wchar_t*)(login + 3), L"Wojtek") == 0);
+    }
     MSG m;
     bool resolved = false;
     DWORD t0 = GetTickCount();
@@ -232,7 +246,8 @@ int main() {
     send(s, ladder.data(), (int)ladder.size(), 0);
     CHECK(RecvLine(s, in, line));
     printf("  line: %s\n", line.c_str());
-    CHECK(line.rfind("/ladder 0 \"Joe\" \"", 0) == 0 && line.find("\" 0 0 0 0 0 0 0") != std::string::npos);
+    // the test sends "Joe" in the login packet; the ranking uses the Steam account
+    CHECK(line.rfind("/ladder 0 \"Wojtek\" \"", 0) == 0 && line.find("\" 0 0 0 0 0 0 0") != std::string::npos);
     closesocket(s);
     Sleep(200);
 

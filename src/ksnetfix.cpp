@@ -30,7 +30,7 @@
 
 #pragma comment(lib, "winmm.lib")
 
-#define KSNETFIX_VERSION "2.5.5"
+#define KSNETFIX_VERSION "2.5.6"
 
 // ---------------------------------------------------------------------------
 // Per-build addresses (all verified by signature before use)
@@ -1200,10 +1200,14 @@ static void Install() {
             InstallSteamTransport() ? "ok" : "FAILED");
     if (cfg.steamNet.enabled) {
         SteamNetGameAddrs g = {A == &kEx1 ? 0x0092C8D4u : 0x0093605Cu, A->installIdHi - 4};
+        if (A == &kEx1) g.client = 0x00F625B0, g.memAlloc = 0x007971D0; // Steam login: ex1 addresses only
         Log("steamnet (EarthNet -> local server%s): %s", A == &kEx1 ? "" : ", untested on this engine",
             SteamNet_Install(cfg.steamNet, g) ? "ok" : "FAILED");
         bool ranking = cfg.steamNet.ranking && cfg.steam.enabled && !cfg.steam.gameServer;
         if (ranking) SteamNet_SetRanking(Steam_Ranking());
+        bool steamLogin = cfg.steamNet.steamLogin && cfg.steam.enabled && !cfg.steam.gameServer && g.client;
+        if (steamLogin) SteamNet_SetAccount(&Steam_AccountName);
+        Log("steamnet login: %s", steamLogin ? "Steam account name" : "the game's login window");
         Log("steamnet ranking: %s", ranking ? "Steam leaderboards" : cfg.steamNet.ranking ? "off (needs [Steam] Enabled=1)" : "off");
     }
     if (cfg.netTrace) {

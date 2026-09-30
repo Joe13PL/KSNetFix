@@ -1998,3 +1998,14 @@ en::RankingService* Steam_Ranking() {
     static SteamRanking r;
     return &r;
 }
+
+std::string Steam_AccountName() {
+    if (!S.enabled || !EnsureSteam() || g_gs) return std::string();
+    std::string nick = en::SanitizeNick(Ansi(SteamFriends()->GetPersonaName()));
+    if (nick.empty()) { // a name made only of characters the game cannot show
+        char buf[32];
+        sprintf(buf, "Gracz %05u", (unsigned)(g_svc->me % 100000));
+        nick = buf;
+    }
+    return nick;
+}

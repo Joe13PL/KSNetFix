@@ -26,6 +26,9 @@ bool Inflate(const uint8_t* p, size_t n, std::vector<uint8_t>& out, size_t maxOu
 std::string Quote(const std::string& s);
 // Splits a client line into words; "quoted words" may contain spaces.
 std::vector<std::string> Tokenize(const std::string& line);
+// A Steam name (already in the game's ANSI code page) as a SteamNet nick: no control
+// characters, no " or %, single spaces, at most 16 bytes. Empty if nothing is left.
+std::string SanitizeNick(const std::string& ansi);
 
 struct Writer {
     std::vector<uint8_t> b;
@@ -98,6 +101,7 @@ struct SessionConfig {
     std::string channel = "KnightShift";
     std::string askName = "Podaj nazwe gracza (dowolna) i kliknij OK."; // no % (format string)
     uint64_t identity = 0;          // the game's own identity (login signature)
+    std::string accountNick;        // Steam account name; what other players see (empty: the login)
 };
 
 class Session {
@@ -111,7 +115,8 @@ class Session {
     bool OnData(const uint8_t* p, size_t n);
     void OnClosed();
 
-    const std::string& Nick() const { return nick_; }
+    const std::string& Nick() const { return nick_; }      // as the game logged in
+    const std::string& PublicName() const { return cfg_.accountNick.empty() ? nick_ : cfg_.accountNick; }
     const std::string& Channel() const { return channel_; }
     bool LoggedIn() const { return state_ == LINES || state_ == BINARY; }
 
