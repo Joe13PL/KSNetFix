@@ -50,6 +50,17 @@ Szczegóły dla graczy: [`package/INSTRUKCJA.txt`](package/INSTRUKCJA.txt).
 
 Wszystkie opcje są opisane w [`ksnetfix.ini`](ksnetfix.ini).
 
+## SteamNet — następca EarthNet (w budowie)
+
+Pozycja „EarthNet” na liście połączeń nazywa się teraz „SteamNet” i działa: gra łączy się z małym
+serwerem wbudowanym w KSNetFix zamiast z martwym `netserver.earthnet.de` (na liście serwerów pojawia się
+„SteamNet — steam”, pozycje dodane przez gracza zostają).
+
+- Na razie tryb offline: logowanie (dowolny login), kanał z czatem, szepty, bohaterowie RPG zapisywani
+  w `SteamNet\` w folderze gry. Inni gracze, kanały i gry przez lobby Steam — w kolejnych wersjach.
+- Ustawienia: sekcja `[SteamNet]` w `ksnetfix.ini`; `Trace=1` zapisuje w logu każdą linię wymienianą z grą.
+- Protokół klienta EarthNet (logowanie, podpis, komendy): [`docs/STEAMNET_PROTOCOL.md`](docs/STEAMNET_PROTOCOL.md).
+
 ## Stan testów
 
 Wersja wczesna, rozwijana na podstawie analizy (reverse engineering) protokołu gry.
@@ -62,6 +73,7 @@ Wersja wczesna, rozwijana na podstawie analizy (reverse engineering) protokołu 
 | transport Steam poza grą (`steamtest host/enum`), lobby Steam w grze | sprawdzone |
 | Steam Datagram Relay dla App ID 254060 (`sdrtest`) | sprawdzone: tylko przez przekaźnik, RTT ~19 ms |
 | pełna gra 2 graczy przez Internet / Steam | **jeszcze niesprawdzona** — zgłaszaj wyniki z logami |
+| SteamNet: protokół i hooki winsock (`test/earthnet_test.cpp`, `steamnet_test.exe` w CI na Windows) | sprawdzone poza grą; **w grze jeszcze nieuruchamiany** |
 
 Problemy zgłaszaj w [Issues](../../issues) z plikami `ksnetfix.log` od hosta i gracza
 (przy problemach ze Steamem: `[Steam] Verbose=1`).
@@ -87,7 +99,7 @@ repozytorium albo ustaw `STEAMWORKS_SDK` na folder z `public/steam/steam_api.h`.
 
 ```bash
 ./build.sh           # build/dinput8.dll + steam_api.dll
-./build.sh tests     # build/test: kbtest, steamtest (host|enum), sdrtest (status|server|client)
+./build.sh tests     # build/test: kbtest, steamtest (host|enum), sdrtest (status|server|client), steamnet_test
 ./package.sh         # dist/KSNetFix-<wersja>.zip
 ```
 
@@ -119,6 +131,8 @@ to znaki towarowe ich właścicieli. Repozytorium nie zawiera plików gry — po
 - Fixes keyboard text input (lost / random letters).
 - Online play over Steam: the game's "TCP/IP" option runs over Steam lobbies and the Steam Datagram
   Relay — no VPN, no port forwarding.
+- SteamNet (work in progress): the dead EarthNet lobby entry becomes "SteamNet" and connects to a small
+  server inside KSNetFix (login, channel chat, RPG heroes); Steam lobbies for other players come next.
 
 Install: download the ZIP from [Releases](../../releases), run `ZAINSTALUJ.bat` (or copy `dinput8.dll`,
 `steam_api.dll`, `ksnetfix.ini` next to `KnightShift.exe`). Requires Windows 10/11 with the DirectPlay
