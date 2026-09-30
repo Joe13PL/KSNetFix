@@ -46,7 +46,7 @@ if [ "$1" = tests ]; then
   mkdir -p "$OUT"
   O="$(win "$OUT")"
   "$CL" $CFLAGS -Fo"$O/" -Fd"$O/" test/kbtest.cpp -Fe"$O/kbtest.exe" -link user32.lib
-  "$CL" $CFLAGS -Fo"$O/" -Fd"$O/" test/steamtest.cpp steampeer.cpp -Fe"$O/steamtest.exe" -link $LIBS
+  "$CL" $CFLAGS -Fo"$O/" -Fd"$O/" test/steamtest.cpp steampeer.cpp earthnet_core.cpp -Fe"$O/steamtest.exe" -link $LIBS
   "$CL" $CFLAGS -Fo"$O/" -Fd"$O/" test/sdrtest.cpp -Fe"$O/sdrtest.exe" -link steam_api.lib
   "$CL" $CFLAGS -I. -Fo"$O/" -Fd"$O/" test/steamnet_wine_test.cpp earthnet.cpp earthnet_core.cpp \
     -Fe"$O/steamnet_test.exe" -link ws2_32.lib advapi32.lib user32.lib
