@@ -170,6 +170,40 @@ class LocalBackend : public Backend {
     std::vector<std::string> channels_, games_;
 };
 
+// Online ranking kept on Steam leaderboards (steampeer.cpp). One entry per Steam account:
+// score = points, details = RankingDetails(). Calls block the connection thread briefly.
+struct BoardEntry {
+    std::string steamName;
+    int score = 0;
+    std::vector<int32_t> details;
+};
+class RankingService {
+  public:
+    virtual ~RankingService() {}
+    // Best `count` entries; create=false: a board that does not exist yet reads as empty.
+    virtual bool Top(const std::string& board, bool create, int count, std::vector<BoardEntry>& out) = 0;
+    // Puts the player on the board with score/details unless they are on it already.
+    virtual void Join(const std::string& board, int score, const std::vector<int32_t>& details) = 0;
+};
+
+// Board names: "SteamNet" (all time), "SteamNet 2026-09" (month), "SteamNet 2026-W40" (ISO week).
+std::string RankingBoard(LadderPeriod period, int64_t unixTime);
+// details: {1 (layout), wins, losses, disconnects, last game (unix time), nick in 16 bytes}
+std::vector<int32_t> RankingDetails(const std::string& nick, int wins, int losses, int disconnects, int64_t lastGame);
+LadderRow RankingRow(const BoardEntry& e);
+
+// LocalBackend plus the ranking from a RankingService.
+class RankedBackend : public LocalBackend {
+  public:
+    RankedBackend(RankingService& r, std::function<int64_t()> now) : ranking_(r), now_(std::move(now)) {}
+    void OnLogin(Session& s) override;
+    std::vector<LadderRow> OnLadder(Session& s, LadderPeriod period) override;
+
+  private:
+    RankingService& ranking_;
+    std::function<int64_t()> now_;
+};
+
 class MemoryStore : public PlayerStore {
   public:
     std::map<std::string, std::vector<uint8_t>> items;

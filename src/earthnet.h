@@ -10,6 +10,7 @@ struct SteamNetSettings {
     char channel[64] = "KnightShift";
     char welcome[256] = "Witaj w SteamNet!";
     bool trace = false;              // log every line exchanged with the game
+    bool ranking = true;             // ranking on Steam leaderboards (needs the Steam transport)
 };
 
 void SteamNet_LoadConfig(const char* iniPath, SteamNetSettings& s);
@@ -21,3 +22,7 @@ struct SteamNetGameAddrs {
 
 // Renames the menu entry and hooks the game's winsock lookups. Call from DllMain.
 bool SteamNet_Install(const SteamNetSettings& s, const SteamNetGameAddrs& game);
+
+// Where the ranking is kept (Steam leaderboards); without it the ranking stays empty.
+namespace en { class RankingService; }
+void SteamNet_SetRanking(en::RankingService* r);

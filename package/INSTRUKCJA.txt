@@ -1,4 +1,4 @@
-﻿KSNetFix 2.5.4 - poprawki multiplayer dla KnightShift / Polanie II
+﻿KSNetFix 2.5.5 - poprawki multiplayer dla KnightShift / Polanie II
 =================================================================
 
 Dla wersji Steam gry (1.3). Poprawka nie zmienia plików gry - dokłada
@@ -85,7 +85,7 @@ Ważne:
   w KnightShift. Połączenia idą przez serwery pośredniczące Valve (SDR).
 - Paczka 2.0 używała AppId=480 (Spacewar), od 2.1 jest 254060. Gracze
   z wersją 2.0 i nowszą nie zobaczą swoich sesji - niech wszyscy
-  zainstalują najnowszą. Wersje 2.1-2.5.4 grają ze sobą bez problemu.
+  zainstalują najnowszą. Wersje 2.1-2.5.5 grają ze sobą bez problemu.
 - Gdy host opuści grę, sesja się kończy.
 - Dwóch gier na tym samym komputerze i tym samym koncie Steam nie da się
   połączyć przez Steam (patrz niżej: gra przez LAN).
@@ -99,7 +99,10 @@ martwym serwerem EarthNet. Na liście serwerów wybierz "SteamNet".
 W tej wersji to tryb offline: logowanie (dowolna nazwa gracza), kanał z
 czatem i zapis bohatera RPG (folder SteamNet w katalogu gry). Inni gracze,
 kanały i gry przez Steam pojawią się w następnych wersjach.
-Wyłączenie: w ksnetfix.ini, w sekcji [SteamNet], ustaw Enabled=0.
+Ranking (przycisk "Ranking") jest wspólny dla wszystkich graczy SteamNet i
+trzymany na tablicach wyników Steam. Po pierwszym zalogowaniu jesteś w nim
+z 0 punktami (sam ranking wyłącza Ranking=0 w sekcji [SteamNet]).
+Wyłączenie SteamNet: w ksnetfix.ini, w sekcji [SteamNet], ustaw Enabled=0.
 
 
 GRA PRZEZ LAN / RADMIN / BEZPOŚREDNIE IP (bez Steama)

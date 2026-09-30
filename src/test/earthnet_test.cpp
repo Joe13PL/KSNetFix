@@ -385,11 +385,95 @@ static void TestBadInput() {
     CHECK(!s.OnData(huge, 4)); // stays closed
 }
 
+// Online ranking over a fake leaderboard service.
+struct FakeRanking : en::RankingService {
+    std::map<std::string, std::vector<en::BoardEntry>> boards;
+    std::vector<std::string> calls;
+    bool Top(const std::string& board, bool create, int count, std::vector<en::BoardEntry>& out) override {
+        calls.push_back("top " + board + (create ? " create" : ""));
+        auto it = boards.find(board);
+        if (it == boards.end()) return !create ? true : (boards[board], true);
+        out.assign(it->second.begin(), it->second.begin() + std::min((size_t)count, it->second.size()));
+        return true;
+    }
+    void Join(const std::string& board, int score, const std::vector<int32_t>& details) override {
+        calls.push_back("join " + board);
+        en::BoardEntry e;
+        e.steamName = "Wojtek";
+        e.score = score;
+        e.details = details;
+        boards[board].push_back(e);
+    }
+};
+
+static void TestRanking() {
+    // board names
+    CHECK(en::RankingBoard(en::LADDER_ALL, 1790000000) == "SteamNet");
+    CHECK(en::RankingBoard(en::LADDER_MONTH, 1790812800) == "SteamNet 2026-10");  // 2026-10-01 00:00 UTC
+    CHECK(en::RankingBoard(en::LADDER_MONTH, 1790812799) == "SteamNet 2026-09");
+    CHECK(en::RankingBoard(en::LADDER_WEEK, 1790812800) == "SteamNet 2026-W40");  // Thursday 2026-10-01
+    CHECK(en::RankingBoard(en::LADDER_WEEK, 1767225600) == "SteamNet 2026-W01");  // Thursday 2026-01-01
+    CHECK(en::RankingBoard(en::LADDER_WEEK, 1767139200) == "SteamNet 2026-W01");  // Wednesday 2025-12-31
+    CHECK(en::RankingBoard(en::LADDER_WEEK, 1798675200) == "SteamNet 2026-W53");  // Thursday 2026-12-31
+    CHECK(en::RankingBoard(en::LADDER_WEEK, 1609459200) == "SteamNet 2020-W53");  // Friday 2021-01-01
+
+    // details round trip; a 16+ character nick is cut to 16
+    en::BoardEntry e;
+    e.steamName = "Steam name";
+    e.score = 150;
+    e.details = en::RankingDetails("Test", 12, 9, 3, 1790812800);
+    CHECK(e.details.size() == 9 && e.details[0] == 1);
+    en::LadderRow r = en::RankingRow(e);
+    CHECK(r.nick == "Test" && r.points == 150 && r.wins == 12 && r.losses == 9 && r.disconnects == 3);
+    CHECK(r.lastPlayed > 46295.99 && r.lastPlayed < 46296.01); // 2026-10-01 as an OLE date
+    e.details = en::RankingDetails("Bardzo_dlugi_nick_gracza", 0, 0, 0, 0);
+    CHECK(en::RankingRow(e).nick == "Bardzo_dlugi_nic" && en::RankingRow(e).lastPlayed == 0);
+    e.details = {7, 1, 2}; // unknown layout: Steam name and points only
+    r = en::RankingRow(e);
+    CHECK(r.nick == "Steam name" && r.points == 150 && r.wins == 0);
+
+    // backend: login joins the all-time board, /ladder reads it, month/week boards are not created
+    FakeClient c;
+    en::SessionConfig cfg;
+    FakeRanking ranking;
+    en::RankedBackend backend(ranking, [] { return (int64_t)1790812800; });
+    en::MemoryStore store;
+    en::Session s(cfg, backend, store, [&](const uint8_t* p, size_t n) { c.in.insert(c.in.end(), p, p + n); }, nullptr);
+    en::Writer info;
+    info.raw("x", 1);
+    auto pkt = GamePacket(info);
+    s.OnData(pkt.data(), pkt.size());
+    en::Writer login;
+    login.str("Test");
+    login.str("");
+    login.u32(0);
+    login.u32(0);
+    login.u32(0);
+    uint8_t zero[16] = {0};
+    login.raw(zero, 16);
+    pkt = GamePacket(login);
+    CHECK(s.OnData(pkt.data(), pkt.size()) && s.LoggedIn());
+    CHECK(ranking.calls.size() == 1 && ranking.calls[0] == "join SteamNet");
+    std::string l = "/ladder";
+    l.push_back('\0');
+    l += "/ladderw";
+    l.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)l.data(), l.size()));
+    std::vector<uint8_t> body;
+    c.TakePacket(body);
+    c.TakeLines();
+    CHECK(ranking.calls.size() == 3 && ranking.calls[1] == "top SteamNet create" && ranking.calls[2] == "top SteamNet 2026-W40");
+    auto ladder = std::find_if(c.lines.begin(), c.lines.end(), [](const std::string& x) { return x.rfind("/ladder ", 0) == 0; });
+    CHECK(ladder != c.lines.end() && *ladder == "/ladder 0 \"Test\" \"46296.000000\" 0 0 0 0 0 0 0");
+    CHECK(!c.lines.empty() && c.lines.back() == "/ladderw 0");
+}
+
 int main() {
     TestZlib();
     TestSignature();
     TestSession();
     TestBadInput();
+    TestRanking();
     printf(g_fail ? "%d FAILED\n" : "all tests passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

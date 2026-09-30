@@ -114,6 +114,24 @@ static bool RecvLine(SOCKET s, std::vector<uint8_t>& in, std::string& line) {
     }
 }
 
+// Stands in for Steam leaderboards (steampeer.cpp).
+struct FakeRanking : en::RankingService {
+    std::vector<en::BoardEntry> board;
+    bool Top(const std::string& name, bool create, int count, std::vector<en::BoardEntry>& out) override {
+        (void)create;
+        if (name == "SteamNet") out.assign(board.begin(), board.begin() + (board.size() < (size_t)count ? board.size() : count));
+        return true;
+    }
+    void Join(const std::string& name, int score, const std::vector<int32_t>& details) override {
+        if (name != "SteamNet") return;
+        en::BoardEntry e;
+        e.steamName = "Wojtek";
+        e.score = score;
+        e.details = details;
+        board.push_back(e);
+    }
+} g_ranking;
+
 static void SendAll(SOCKET s, const std::vector<uint8_t>& b) { send(s, (const char*)b.data(), (int)b.size(), 0); }
 
 int main() {
@@ -130,6 +148,7 @@ int main() {
     strcpy(st.welcome, "Witaj w SteamNet (test)");
     SteamNetGameAddrs addrs = {(uint32_t)(uintptr_t)g_menuString, (uint32_t)(uintptr_t)g_identity};
     CHECK(SteamNet_Install(st, addrs));
+    SteamNet_SetRanking(&g_ranking);
     CHECK(wcscmp(g_menuString, L"SteamNet") == 0);
 
     // The game loads ws2_32 at start-up and takes every function with GetProcAddress.
@@ -206,6 +225,14 @@ int main() {
     CHECK(RecvLine(s, in, line));
     printf("  line: %s\n", line.c_str());
     CHECK(line == "/send \"Joe\" \"czesc\"");
+
+    // ranking: the login put Joe on the (fake) Steam board, /ladder shows him
+    std::string ladder = "/ladder";
+    ladder.push_back('\0');
+    send(s, ladder.data(), (int)ladder.size(), 0);
+    CHECK(RecvLine(s, in, line));
+    printf("  line: %s\n", line.c_str());
+    CHECK(line.rfind("/ladder 0 \"Joe\" \"", 0) == 0 && line.find("\" 0 0 0 0 0 0 0") != std::string::npos);
     closesocket(s);
     Sleep(200);
 

@@ -16,3 +16,7 @@ typedef HRESULT(__stdcall* HCoCreate)(REFCLSID, LPUNKNOWN, DWORD, REFIID, LPVOID
 
 void Steam_Configure(const SteamSettings& s, HCoCreate orig);
 HRESULT __stdcall Steam_CoCreateInstance(REFCLSID clsid, LPUNKNOWN outer, DWORD ctx, REFIID riid, LPVOID* ppv);
+
+// SteamNet ranking on Steam leaderboards (see earthnet_core.h).
+namespace en { class RankingService; }
+en::RankingService* Steam_Ranking();

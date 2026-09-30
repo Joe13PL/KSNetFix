@@ -140,6 +140,15 @@ Rekord gry (`+0x4A64`, liczba `+0x4A68`, 0x34 B): +0x04 GUID, +0x14 nazwa, +0x1C
 Ekran: Poz. = numer wiersza, Gracz, Punkty, Gry = zwyc + przegr + rozl, Zwyc., Przegr., Rozł., Ostatnia gra.
 Własny nick (`+0x4A80`) jest wyróżniony kolorem. Sprawdzone emulacją (`analysis/steamnet_emu/emu_ladder.py`).
 
+### Gdzie SteamNet trzyma ranking
+
+Tablice wyników Steam (ISteamUserStats) aplikacji 254060, zakładane przez grę (`FindOrCreateLeaderboard`,
+malejąco, liczbowo): `SteamNet` (cały czas), `SteamNet RRRR-MM` (miesiąc), `SteamNet RRRR-Wtt`
+(tydzień ISO, UTC). Jeden wpis na konto Steam: wynik = punkty, szczegóły (int32):
+`{1, zwyc, przegr, rozl, ostatnia gra (czas unix), nick w 16 bajtach}`. Pierwsze logowanie dopisuje gracza
+do `SteamNet` z 0 punktami (tylko gdy go tam nie ma). Tablice miesięczne i tygodniowe są tylko czytane
+(`FindLeaderboard`), dopóki nie ma wyników. Kod: `RankedBackend` (`earthnet_core.cpp`), `SteamRanking` (`steampeer.cpp`).
+
 ### Komendy klienta
 
 | linia | kiedy |

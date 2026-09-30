@@ -16,7 +16,9 @@
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -33,6 +35,7 @@ namespace {
 
 SteamNetSettings S;
 SteamNetGameAddrs A;
+en::RankingService* g_ranking;
 char g_gameDir[MAX_PATH];
 
 typedef FARPROC(WINAPI* GetProcAddressFn)(HMODULE, LPCSTR);
@@ -184,7 +187,12 @@ DWORD WINAPI ConnectionThread(void* param) {
     cfg.welcome = S.welcome;
     cfg.channel = S.channel;
     cfg.identity = (uint64_t)G<uint32_t>(A.identity) | (uint64_t)G<uint32_t>(A.identity + 4) << 32;
-    en::LocalBackend backend;
+    std::unique_ptr<en::Backend> backendPtr;
+    if (g_ranking && S.ranking)
+        backendPtr.reset(new en::RankedBackend(*g_ranking, [] { return (int64_t)time(nullptr); }));
+    else
+        backendPtr.reset(new en::LocalBackend);
+    en::Backend& backend = *backendPtr;
     FileStore store;
     auto send_ = [c](const uint8_t* p, size_t n) {
         if (S.trace) Log("steamnet: >> %s", Printable(p, n).c_str());
@@ -324,7 +332,10 @@ void SteamNet_LoadConfig(const char* ini, SteamNetSettings& s) {
     ReadIniString(ini, "Channel", s.channel, sizeof(s.channel));
     ReadIniString(ini, "Welcome", s.welcome, sizeof(s.welcome));
     s.trace = GetPrivateProfileIntA("SteamNet", "Trace", 0, ini) != 0;
+    s.ranking = GetPrivateProfileIntA("SteamNet", "Ranking", 1, ini) != 0;
 }
+
+void SteamNet_SetRanking(en::RankingService* r) { g_ranking = r; }
 
 bool SteamNet_Install(const SteamNetSettings& s, const SteamNetGameAddrs& game) {
     S = s;

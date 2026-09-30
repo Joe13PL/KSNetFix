@@ -18,6 +18,7 @@
 #include <deque>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,7 @@
 #include "steam/isteamnetworkingutils.h"
 
 #include "dp8.h"
+#include "earthnet_core.h"
 #include "steampeer.h"
 
 extern void Log(const char* fmt, ...);
@@ -1751,6 +1753,8 @@ DWORD WINAPI SteamThread(LPVOID) {
 bool g_steamTried = false, g_steamOk = false;
 
 bool EnsureSteam() {
+    static std::mutex m; // the game thread (DirectPlay) and SteamNet's threads (ranking)
+    std::lock_guard<std::mutex> lock(m);
     if (g_steamTried) return g_steamOk;
     g_steamTried = true;
     char dir[MAX_PATH], path[MAX_PATH];
@@ -1825,6 +1829,153 @@ bool EnsureSteam() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Leaderboards for the SteamNet ranking. Each request runs on the Steam thread
+// (call results are dispatched there); the SteamNet connection thread waits for it.
+// ---------------------------------------------------------------------------
+std::string Ansi(const char* utf8) {
+    wchar_t w[256];
+    char a[256];
+    if (!MultiByteToWideChar(CP_UTF8, 0, utf8, -1, w, 256)) return std::string();
+    if (!WideCharToMultiByte(CP_ACP, 0, w, -1, a, sizeof(a), "?", nullptr)) return std::string();
+    return a;
+}
+
+struct BoardOp {
+    bool join = false, create = false;
+    std::string board;
+    int count = 10, score = 0;
+    std::vector<int32> details;
+    // results, valid once `done` is set
+    bool ok = false;
+    std::vector<en::BoardEntry> out;
+
+    HANDLE done = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+    LONG refs = 1; // requester; +1 while the Steam thread works on it
+    SteamLeaderboard_t lb = 0;
+    CCallResult<BoardOp, LeaderboardFindResult_t> crFind;
+    CCallResult<BoardOp, LeaderboardScoresDownloaded_t> crDown;
+    CCallResult<BoardOp, LeaderboardScoreUploaded_t> crUp;
+
+    void Release() {
+        if (InterlockedDecrement(&refs) == 0) {
+            CloseHandle(done);
+            delete this;
+        }
+    }
+    void Finish(bool success) {
+        ok = success;
+        SetEvent(done);
+        g_svc->Post([this] { Release(); }); // not from inside the call result that is running now
+    }
+    void Start() {
+        ISteamUserStats* us = SteamUserStats();
+        SteamAPICall_t c = !us ? k_uAPICallInvalid
+                           : create ? us->FindOrCreateLeaderboard(board.c_str(), k_ELeaderboardSortMethodDescending,
+                                                                  k_ELeaderboardDisplayTypeNumeric)
+                                    : us->FindLeaderboard(board.c_str());
+        if (c == k_uAPICallInvalid) {
+            Log("steam: ranking \"%s\": leaderboard request refused", board.c_str());
+            return Finish(false);
+        }
+        crFind.Set(c, this, &BoardOp::OnFind);
+    }
+    void OnFind(LeaderboardFindResult_t* r, bool io) {
+        if (io || !r->m_bLeaderboardFound) {
+            // FindLeaderboard of a board nobody wrote to yet: an empty ranking, not an error
+            Log("steam: ranking \"%s\": %s", board.c_str(), io ? "Steam I/O failure" : create ? "cannot create the leaderboard" : "no leaderboard yet");
+            return Finish(!io && !create && !join);
+        }
+        lb = r->m_hSteamLeaderboard;
+        ISteamUserStats* us = SteamUserStats();
+        Log("steam: ranking \"%s\": leaderboard %llu, %d entries", board.c_str(), (unsigned long long)lb,
+            us->GetLeaderboardEntryCount(lb));
+        SteamAPICall_t c;
+        if (join) {
+            CSteamID me = SteamUser()->GetSteamID();
+            c = us->DownloadLeaderboardEntriesForUsers(lb, &me, 1);
+        } else {
+            c = us->DownloadLeaderboardEntries(lb, k_ELeaderboardDataRequestGlobal, 1, count);
+        }
+        crDown.Set(c, this, &BoardOp::OnDownloaded);
+    }
+    void OnDownloaded(LeaderboardScoresDownloaded_t* r, bool io) {
+        if (io) {
+            Log("steam: ranking \"%s\": download failed", board.c_str());
+            return Finish(false);
+        }
+        ISteamUserStats* us = SteamUserStats();
+        if (join) {
+            if (r->m_cEntryCount > 0) {
+                Log("steam: ranking \"%s\": already listed", board.c_str());
+                return Finish(true);
+            }
+            SteamAPICall_t c = us->UploadLeaderboardScore(lb, k_ELeaderboardUploadScoreMethodKeepBest, score,
+                                                          details.data(), (int)details.size());
+            crUp.Set(c, this, &BoardOp::OnUploaded);
+            return;
+        }
+        for (int i = 0; i < r->m_cEntryCount; i++) {
+            LeaderboardEntry_t e;
+            int32 d[k_cLeaderboardDetailsMax];
+            if (!us->GetDownloadedLeaderboardEntry(r->m_hSteamLeaderboardEntries, i, &e, d, k_cLeaderboardDetailsMax)) continue;
+            en::BoardEntry b;
+            b.steamName = Ansi(SteamFriends()->GetFriendPersonaName(e.m_steamIDUser));
+            b.score = e.m_nScore;
+            b.details.assign(d, d + (e.m_cDetails < k_cLeaderboardDetailsMax ? e.m_cDetails : k_cLeaderboardDetailsMax));
+            out.push_back(b);
+        }
+        Log("steam: ranking \"%s\": %d entries downloaded", board.c_str(), (int)out.size());
+        Finish(true);
+    }
+    void OnUploaded(LeaderboardScoreUploaded_t* r, bool io) {
+        bool success = !io && r->m_bSuccess;
+        Log("steam: ranking \"%s\": %s", board.c_str(), success ? "player added" : "upload refused");
+        Finish(success);
+    }
+};
+
+// Hands op to the Steam thread, which drops its reference when done. False if Steam is off.
+bool PostBoardOp(BoardOp* op) {
+    if (!S.enabled || !EnsureSteam() || g_gs) {
+        Log("steam: ranking \"%s\": Steam not available ([Steam] Enabled=0 or Steam not running)", op->board.c_str());
+        return false;
+    }
+    InterlockedIncrement(&op->refs);
+    g_svc->Post([op] { op->Start(); });
+    return true;
+}
+
+class SteamRanking : public en::RankingService {
+  public:
+    bool Top(const std::string& board, bool create, int count, std::vector<en::BoardEntry>& out) override {
+        BoardOp* op = new BoardOp;
+        op->board = board;
+        op->create = create;
+        op->count = count;
+        bool ok = false;
+        if (PostBoardOp(op)) {
+            if (WaitForSingleObject(op->done, 8000) == WAIT_OBJECT_0) {
+                ok = op->ok;
+                if (ok) out = op->out;
+            } else {
+                Log("steam: ranking \"%s\": no answer from Steam in 8 s", board.c_str());
+            }
+        }
+        op->Release();
+        return ok;
+    }
+    void Join(const std::string& board, int score, const std::vector<int32_t>& details) override {
+        BoardOp* op = new BoardOp;
+        op->join = op->create = true;
+        op->board = board;
+        op->score = score;
+        op->details.assign(details.begin(), details.end());
+        PostBoardOp(op); // fire and forget
+        op->Release();
+    }
+};
+
 } // namespace
 
 HRESULT __stdcall Steam_CoCreateInstance(REFCLSID clsid, LPUNKNOWN outer, DWORD ctx, REFIID riid, LPVOID* ppv) {
@@ -1841,4 +1992,9 @@ HRESULT __stdcall Steam_CoCreateInstance(REFCLSID clsid, LPUNKNOWN outer, DWORD 
 void Steam_Configure(const SteamSettings& s, HCoCreate orig) {
     S = s;
     g_origCoCreate = orig;
+}
+
+en::RankingService* Steam_Ranking() {
+    static SteamRanking r;
+    return &r;
 }

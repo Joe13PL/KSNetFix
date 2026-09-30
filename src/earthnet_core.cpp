@@ -633,6 +633,90 @@ void LocalBackend::OnWhisper(Session& s, const std::string& to, const std::strin
     if (to == s.Nick()) s.WhisperFrom(s.Nick(), text);
 }
 
+// ---------------------------------------------------------------------------
+// Online ranking
+
+static void CivilFromDays(int64_t z, int& y, unsigned& m, unsigned& d) { // days since 1970-01-01
+    z += 719468;
+    int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+    unsigned doe = (unsigned)(z - era * 146097);
+    unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    unsigned mp = (5 * doy + 2) / 153;
+    d = doy - (153 * mp + 2) / 5 + 1;
+    m = mp < 10 ? mp + 3 : mp - 9;
+    y = (int)(yoe + era * 400) + (m <= 2);
+}
+
+static int64_t DaysFromCivil(int y, unsigned m, unsigned d) {
+    y -= m <= 2;
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1;
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (int64_t)doe - 719468;
+}
+
+std::string RankingBoard(LadderPeriod period, int64_t t) {
+    int64_t days = (t >= 0 ? t : t - 86399) / 86400;
+    int y;
+    unsigned m, d;
+    char buf[32];
+    if (period == LADDER_ALL) return "SteamNet";
+    if (period == LADDER_MONTH) {
+        CivilFromDays(days, y, m, d);
+        snprintf(buf, sizeof(buf), "SteamNet %04d-%02u", y, m);
+        return buf;
+    }
+    // ISO week: the week (Monday..Sunday) belongs to the year of its Thursday
+    int wd = (int)(((days % 7) + 7 + 3) % 7); // 0 = Monday (1970-01-01 was a Thursday)
+    int64_t thursday = days - wd + 3;
+    CivilFromDays(thursday, y, m, d);
+    snprintf(buf, sizeof(buf), "SteamNet %04d-W%02d", y, (int)((thursday - DaysFromCivil(y, 1, 1)) / 7 + 1));
+    return buf;
+}
+
+std::vector<int32_t> RankingDetails(const std::string& nick, int wins, int losses, int disconnects, int64_t lastGame) {
+    std::vector<int32_t> d = {1, wins, losses, disconnects, (int32_t)(uint32_t)lastGame, 0, 0, 0, 0};
+    for (size_t i = 0; i < nick.size() && i < 16; i++) d[5 + i / 4] |= (int32_t)((uint32_t)(uint8_t)nick[i] << (8 * (i % 4)));
+    return d;
+}
+
+LadderRow RankingRow(const BoardEntry& e) {
+    LadderRow r;
+    r.points = e.score;
+    r.nick = e.steamName;
+    const std::vector<int32_t>& d = e.details;
+    if (d.size() >= 9 && d[0] == 1) {
+        r.wins = d[1], r.losses = d[2], r.disconnects = d[3];
+        if (d[4]) r.lastPlayed = 25569.0 + (double)(uint32_t)d[4] / 86400.0; // unix -> OLE date
+        std::string nick;
+        for (size_t i = 0; i < 16; i++) {
+            char c = (char)((uint32_t)d[5 + i / 4] >> (8 * (i % 4)));
+            if (!c) break;
+            nick += c;
+        }
+        if (!nick.empty()) r.nick = nick;
+    }
+    return r;
+}
+
+void RankedBackend::OnLogin(Session& s) {
+    LocalBackend::OnLogin(s);
+    // A new player shows up on the all-time board with 0 points; "last game" = first login.
+    ranking_.Join(RankingBoard(LADDER_ALL, now_()), 0, RankingDetails(s.Nick(), 0, 0, 0, now_()));
+}
+
+std::vector<LadderRow> RankedBackend::OnLadder(Session& s, LadderPeriod period) {
+    (void)s;
+    std::vector<BoardEntry> top;
+    std::vector<LadderRow> rows;
+    // month / week boards appear with the first result of that period
+    if (ranking_.Top(RankingBoard(period, now_()), period == LADDER_ALL, 10, top))
+        for (const BoardEntry& e : top) rows.push_back(RankingRow(e));
+    return rows;
+}
+
 bool MemoryStore::Load(const std::string& nick, const std::string& key, std::vector<uint8_t>& data) {
     auto it = items.find(nick + "\n" + key);
     if (it == items.end()) return false;
