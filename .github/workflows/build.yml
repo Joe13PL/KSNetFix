@@ -1,0 +1,42 @@
+# Every push / pull request: build KSNetFix and the tests with MSVC on Windows and run the
+# tests that need neither the game nor Steam (SteamNet protocol + winsock hooks).
+name: build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      STEAMWORKS_CRATE: https://static.crates.io/crates/steamworks-sys/steamworks-sys-0.13.0.crate
+      STEAM_API_DLL_SHA256: fdafb7c65ec7d4182b42bf92cc8671c68e4dc547cc6e613899d2618a47eb65da
+    steps:
+      - uses: actions/checkout@v4
+      - name: Steamworks SDK
+        run: |
+          curl -fsSL -A "KSNetFix CI build" -o sw.crate "$STEAMWORKS_CRATE"
+          mkdir sw && tar -xzf sw.crate -C sw
+          mv sw/*/lib/steam sdk
+          echo "$STEAM_API_DLL_SHA256  sdk/redistributable_bin/steam_api.dll" | sha256sum -c
+      - name: Build
+        run: |
+          VS="$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' \
+                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | tr -d '\r')"
+          MSVC="$(cygpath -m "$VS")/VC/Tools/MSVC"
+          export VCTOOLS="$MSVC/$(ls "$MSVC" | sort -V | tail -1)"
+          ./build.sh
+          ./build.sh tests
+      - name: SteamNet test
+        run: build/test/steamnet_test.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dinput8-${{ github.sha }}
+          path: |
+            build/dinput8.dll
+            build/dinput8.pdb
+            build/steam_api.dll
+            ksnetfix.ini

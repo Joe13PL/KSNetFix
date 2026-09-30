@@ -38,7 +38,7 @@ export LIB="$VCTOOLS/lib/x86;$WINSDK/Lib/$WINSDKV/ucrt/x86;$WINSDK/Lib/$WINSDKV/
 export MSYS2_ARG_CONV_EXCL='*'
 CL="$VCTOOLS/bin/Hostx64/x86/cl.exe"
 CFLAGS="-nologo -std:c++17 -O2 -MT -W3 -EHsc -GS- -Zi"
-LIBS="kernel32.lib user32.lib winmm.lib ole32.lib steam_api.lib delayimp.lib -DELAYLOAD:steam_api.dll"
+LIBS="kernel32.lib user32.lib winmm.lib ole32.lib ws2_32.lib advapi32.lib steam_api.lib delayimp.lib -DELAYLOAD:steam_api.dll"
 
 cd "$ROOT/src"
 if [ "$1" = tests ]; then
@@ -48,8 +48,10 @@ if [ "$1" = tests ]; then
   "$CL" $CFLAGS -Fo"$O/" -Fd"$O/" test/kbtest.cpp -Fe"$O/kbtest.exe" -link user32.lib
   "$CL" $CFLAGS -Fo"$O/" -Fd"$O/" test/steamtest.cpp steampeer.cpp -Fe"$O/steamtest.exe" -link $LIBS
   "$CL" $CFLAGS -Fo"$O/" -Fd"$O/" test/sdrtest.cpp -Fe"$O/sdrtest.exe" -link steam_api.lib
+  "$CL" $CFLAGS -I. -Fo"$O/" -Fd"$O/" test/steamnet_wine_test.cpp earthnet.cpp earthnet_core.cpp \
+    -Fe"$O/steamnet_test.exe" -link ws2_32.lib advapi32.lib user32.lib
   cp "$SDKROOT/redistributable_bin/steam_api.dll" "$OUT/"
-  echo "built: $OUT/{kbtest,steamtest,sdrtest}.exe"
+  echo "built: $OUT/{kbtest,steamtest,sdrtest,steamnet_test}.exe"
   exit 0
 fi
 
@@ -61,7 +63,7 @@ IFS=';' read -r -a LIST <<< "${KSNF_EXTRA_SRC:-}"
 for f in "${LIST[@]}"; do [ -n "$f" ] && EXTRA+=("$(win "$f")"); done
 IFS=';' read -r -a LIST <<< "${KSNF_INCLUDE:-}"
 for d in "${LIST[@]}"; do [ -n "$d" ] && INCLUDE="$INCLUDE;$(win "$d")"; done
-"$CL" $CFLAGS -LD $KSNF_DEFINES -Fo"$O/" -Fd"$O/" ksnetfix.cpp steampeer.cpp "${EXTRA[@]}" \
+"$CL" $CFLAGS -LD $KSNF_DEFINES -Fo"$O/" -Fd"$O/" ksnetfix.cpp steampeer.cpp earthnet.cpp earthnet_core.cpp "${EXTRA[@]}" \
   -link -DEF:dinput8.def -OUT:"$O/dinput8.dll" -IMPLIB:"$O/dinput8.lib" -PDB:"$O/dinput8.pdb" -PDBALTPATH:%_PDB% -DEBUG -OPT:REF $LIBS
 rm -f "$OUT/dinput8.exp" "$OUT/dinput8.lib"
 cp "$SDKROOT/redistributable_bin/steam_api.dll" "$OUT/steam_api.dll"

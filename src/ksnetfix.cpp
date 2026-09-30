@@ -23,6 +23,7 @@
 
 #include "patch.h"
 #include "steampeer.h"
+#include "earthnet.h"
 #ifdef KSNETFIX_SERVER
 #include "server.h" // dedicated server add-on (separate repository)
 #endif
@@ -150,6 +151,7 @@ struct Config {
     int logInterval = 10;           // seconds
     int netTrace = 0;               // revive the engine's own net debug trace
     SteamSettings steam;
+    SteamNetSettings steamNet;
     bool server = false;            // [Server] Enabled (dedicated server builds only)
 };
 static Config cfg;
@@ -206,6 +208,7 @@ static void LoadConfig() {
     cfg.steam.gameServer       = GetPrivateProfileIntA("Steam", "GameServer", 0, ini) != 0;
     GetPrivateProfileStringA("Server", "SessionName", cfg.steam.serverName, cfg.steam.serverName,
                              (DWORD)sizeof(cfg.steam.serverName), ini);
+    SteamNet_LoadConfig(ini, cfg.steamNet);
 #ifdef KSNETFIX_SERVER
     cfg.server = Server_LoadConfig(ini);
 #endif
@@ -1083,7 +1086,7 @@ static bool InstallUniqueIdentity() {
 // ---------------------------------------------------------------------------
 // 9. Steam transport: route the game's DirectPlay 8 peer through Steam
 // ---------------------------------------------------------------------------
-static void** FindImport(HMODULE mod, const char* dll, const char* func) {
+void** FindImport(void* mod, const char* dll, const char* func) {
     auto* base = (uint8_t*)mod;
     auto* nt = (IMAGE_NT_HEADERS*)(base + ((IMAGE_DOS_HEADER*)base)->e_lfanew);
     auto& dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
@@ -1195,6 +1198,11 @@ static void Install() {
         Log("steam transport (TCP/IP -> Steam, app id %u, %s): %s", cfg.steam.appId,
             cfg.steam.gameServer ? "anonymous game server" : (cfg.steam.lobbyFriendsOnly ? "friends-only lobbies" : "public lobbies"),
             InstallSteamTransport() ? "ok" : "FAILED");
+    if (cfg.steamNet.enabled) {
+        SteamNetGameAddrs g = {A == &kEx1 ? 0x0092C8D4u : 0x0093605Cu, A->installIdHi - 4};
+        Log("steamnet (EarthNet -> local server%s): %s", A == &kEx1 ? "" : ", untested on this engine",
+            SteamNet_Install(cfg.steamNet, g) ? "ok" : "FAILED");
+    }
     if (cfg.netTrace) {
         g_trace = OpenLog("ksnettrace.log");
         Log("engine net trace -> ksnettrace.log: %s", WriteRel32(A->traceFn, 0xE9, (void*)&TraceHook) ? "ok" : "FAILED");
