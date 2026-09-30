@@ -124,7 +124,7 @@ Wiadomości 1-bajtowe sterujące:
 |---|---|---|
 | PreciseClock: zegar z QPC w ns, 1 000 000 jednostek/ms | 2, 3 | lokalne |
 | TimerResolution: `timeBeginPeriod(1)` | 4 | lokalne |
-| CatchUp: gdy w kolejce czeka znacznik tury, pętla dostaje dodatkowe pełne ticki (do 3×), aż klient wykonuje każdą turę w chwili jej nadejścia — jak host. Samo przesuwanie harmonogramu (v1.0–1.3) nie działało: po każdym ticku wątek oddaje semafor rendererowi; dopiero zaległość > 1 okresu uruchamia wewnętrzną pętlę „kilka ticków bez renderu” | 1 | lokalne, deterministyczne (liczba ticków na turę bez zmian) |
+| CatchUp (od 2.4 płynny, `CatchUpSmooth=1`): tick trwa `okres / tempo`, gdzie tempo 0,95–1,25× wynika ze średniej długości kolejki znaczników (średnia krocząca, cel `SmoothTarget` = 0,25 tury). Ticki są równo rozłożone, więc ruch jednostek u dołączonego gracza jest płynny. Przy kolejce ≥ 3 tur (zacięcie, wczytywanie) i w trybie `CatchUpSmooth=0` (2.2/2.3) pętla dostaje dodatkowe pełne ticki (do 3×). Pełny tick bez renderu wykonuje dwa kroki symulacji w jednej klatce, a potem klient czeka na następną turę, co gracz widzi jako szarpany ruch („jak 30 fps”). | 1 | lokalne, deterministyczne (liczba ticków na turę bez zmian) |
 | AckEveryTurns=1 | 5 | protokół bez zmian |
 | MaxTurnsAhead 3→5, MaxTurnSpread 4→6 (host) | 5 | tylko host |
 | RngIsolation + RngMonitor | 7 | tylko w grze sieciowej; najlepiej u wszystkich |

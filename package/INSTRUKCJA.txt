@@ -1,4 +1,4 @@
-﻿KSNetFix 2.2 - poprawki multiplayer dla KnightShift / Polanie II
+﻿KSNetFix 2.4 - poprawki multiplayer dla KnightShift / Polanie II
 =================================================================
 
 Dla wersji Steam gry (1.3). Poprawka nie zmienia plików gry - dokłada
@@ -85,7 +85,7 @@ Ważne:
   w KnightShift. Połączenia idą przez serwery pośredniczące Valve (SDR).
 - Paczka 2.0 używała AppId=480 (Spacewar), od 2.1 jest 254060. Gracze
   z wersją 2.0 i nowszą nie zobaczą swoich sesji - niech wszyscy
-  zainstalują najnowszą. Wersje 2.1 i 2.2 grają ze sobą bez problemu.
+  zainstalują najnowszą. Wersje 2.1-2.4 grają ze sobą bez problemu.
 - Gdy host opuści grę, sesja się kończy.
 - Dwóch gier na tym samym komputerze i tym samym koncie Steam nie da się
   połączyć przez Steam (patrz niżej: gra przez LAN).
@@ -106,9 +106,13 @@ NAJWAŻNIEJSZE USTAWIENIA (ksnetfix.ini)
                            friends = tylko znajomi ze Steama
 [Steam] AppId=254060       musi być taki sam u wszystkich graczy
                            (480 = Spacewar, ustawienie z wersji 2.0)
-CatchUpTarget=0            0 = najmniejsze opóźnienie rozkazów;
-                           1 = trochę większe opóźnienie, ale płynniej
-                           przy bardzo niestabilnym internecie
+CatchUpSmooth=1            1 = płynny ruch jednostek u dołączonego gracza
+                           (gra lekko przyspiesza/zwalnia zamiast dokładać
+                           ticki); 0 = zachowanie z 2.2/2.3: minimalnie
+                           mniejsze opóźnienie rozkazów, ale ruch skokowy
+SmoothTarget=0.25          średnia liczba tur w kolejce; więcej (np. 0.5)
+                           = płynniej przy niestabilnym internecie kosztem
+                           trochę większego opóźnienia rozkazów
 KeyboardFix=1              poprawka pisania z klawiatury
 Enabled=0 (w [KSNetFix])   wyłącza wszystkie poprawki bez usuwania plików
 Pozostałe opcje są opisane w samym pliku ksnetfix.ini.
