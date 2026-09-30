@@ -96,9 +96,9 @@ static bool RecvPacket(SOCKET s, std::vector<uint8_t>& in, std::vector<uint8_t>&
     if (!RecvAll(s, in, 4)) return false;
     uint32_t len = in[0] | in[1] << 8 | in[2] << 16 | (uint32_t)in[3] << 24;
     if (!RecvAll(s, in, len)) return false;
-    body.assign(in.begin() + 4, in.begin() + len);
+    bool ok = en::Inflate(in.data() + 4, len - 4, body); // packets are zlib streams
     in.erase(in.begin(), in.begin() + len);
-    return true;
+    return ok;
 }
 
 static bool RecvLine(SOCKET s, std::vector<uint8_t>& in, std::string& line) {

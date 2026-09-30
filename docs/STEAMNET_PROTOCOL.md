@@ -18,7 +18,9 @@ oczekuje od serwera. Zweryfikowane w kodzie maszynowym, jeszcze nie na żywej gr
 
 ## Etap 1 — pakiety binarne
 
-Każdy pakiet: `u32 długość_całkowita` (łącznie z tym polem) + treść. Liczby little-endian, napis = `u32 n` + `n`
+Każdy pakiet: `u32 długość_całkowita` (łącznie z tym polem) + **strumień zlib** z treścią (klasa strumienia gry
+`0x7995D0`: flagi `0x6001` = odczyt przez inflate, `0x6002` = zapis przez deflate poziom 6; zlib 1.1.3).
+Opis pól niżej dotyczy treści po rozpakowaniu. Liczby little-endian, napis = `u32 n` + `n`
 bajtów ANSI bez zera.
 
 | kierunek | stan klienta | treść |
