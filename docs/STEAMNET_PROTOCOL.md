@@ -193,6 +193,19 @@ gracze, zalogowani, kanały, gry w toku, gry otwarte (`0x8239A0`: „gracze b/a,
 Kod: `OnlineBackend` (`earthnet_core.cpp`), `SteamLobbies` (`steampeer.cpp`); zdarzenia z wątku Steam idą przez
 `LobbyEvents` do wątku połączenia (pętla `select` co 100 ms).
 
+**Gry online.** Host: po `/plays "nazwa" "hasło" "guid"` (gra założona) SteamNet ustawia dane członka lobby kanału
+`game = "<lobby gry transportu>\n<guid>\n<nazwa>"` (gdy transport już założył lobby gry); po `/join` (koniec gry)
+czyści je. Pozostali: zmiana danych członka (`LobbyDataUpdate_t`) → gra dostaje wirtualny adres `10.83.x.y`
+(bajty; w linii liczba dziesiętna jak w rekordzie `+0x1C`) → `$play "nazwa" 0 0 <ipv4> "guid"`; ta sama nazwa od
+kilku graczy dostaje ` #2`. Wyjście gracza z kanału usuwa jego grę (`&play`).
+
+**Dołączanie** (sprawdzone emulacją, `emu_playc_send.py`, `emu_playc.py`): klient `0x80BAD0` wysyła
+`/playc "<guid gry>" "<nazwa>" "<hasło>"` i zapamiętuje IPv4 gry (`+0x4A48`). Odpowiedź
+`/playc "<guid>" "<nazwa>" 1 <ipv4>` → `+0xE8(0, ipv4)` (`0x823E10`) → `0x82E920(nazwa, …, ipv4)` →
+`0x84C500` / `0x84BBB0` z adresem `"%d.%d.%d.%d"` jako nazwą hosta DirectPlay. Trzecie słowo `0` →
+`+0xE8(2)` „złe hasło”. Transport Steam (`ParseSteamTarget`) zamienia adres `10.83.x.y` na lobby gry i łączy
+jak z `ks-lobby:<id>`.
+
 ### Komendy klienta
 
 | linia | kiedy |

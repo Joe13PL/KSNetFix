@@ -568,6 +568,8 @@ struct FakeLobbies : en::LobbyService {
     void Say(const std::string& text) override { calls.push_back("say " + text); }
     void Whisper(uint64_t to, const std::string& text) override { calls.push_back("whisper " + std::to_string(to) + " " + text); }
     void RefreshChannels() override { calls.push_back("channels"); }
+    void PublishGame(const std::string& name, const std::string& guid) override { calls.push_back("publish " + name + " " + guid); }
+    void UnpublishGame() override { calls.push_back("unpublish"); }
     void Stop() override { calls.push_back("stop"); }
     void Push(en::LobbyEvent::Kind k, uint64_t id = 0, const std::string& name = "", const std::string& text = "") {
         en::LobbyEvent e;
@@ -681,6 +683,56 @@ static void TestOnline() {
     CHECK(s.OnData((const uint8_t*)l.data(), l.size()));
     c.TakeLines();
     CHECK(lobbies.calls.size() == before && has("$user \"Cezary\" 0 \"\" \"00000000-0000-0000-0000-000000000000\""));
+    c.lines.clear();
+
+    // games: another player's game is listed with its address, joining answers with it
+    en::LobbyEvent g;
+    g.kind = en::LobbyEvent::GAME_ADDED;
+    g.member.id = 14;
+    g.text = "RTS : mapa";
+    g.guid = "04030201-0605-0807-090a-0b0c0d0e0f10";
+    g.ipv4 = 0x0101530a; // 10.83.1.1
+    lobbies.events->Push(g);
+    g.member.id = 11; // same name from someone else: told apart
+    g.guid = "00000000-0000-0000-0000-000000000011";
+    g.ipv4 = 0x0201530a;
+    lobbies.events->Push(g);
+    s.Poll();
+    c.TakeLines();
+    CHECK(has("$play \"RTS : mapa\" 0 0 16864010 \"04030201-0605-0807-090a-0b0c0d0e0f10\""));
+    CHECK(has("$play \"RTS : mapa #2\" 0 0 33641226 \"00000000-0000-0000-0000-000000000011\""));
+    CHECK(has("/syncstats 4 4 2 0 2 0 0"));
+    c.lines.clear();
+    l = "/playc \"04030201-0605-0807-090a-0b0c0d0e0f10\" \"RTS : mapa\" \"\"";
+    l.push_back('\0');
+    l += "/playc \"00000000-0000-0000-0000-000000000099\" \"Nie ma\" \"\"";
+    l.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)l.data(), l.size()));
+    c.TakeLines();
+    CHECK(has("/playc \"04030201-0605-0807-090a-0b0c0d0e0f10\" \"RTS : mapa\" 1 16864010"));
+    CHECK(has("/playc \"00000000-0000-0000-0000-000000000099\" \"Nie ma\" 0") && has("&play \"Nie ma\""));
+    c.lines.clear();
+    lobbies.Push(en::LobbyEvent::GAME_REMOVED, 14);
+    lobbies.Push(en::LobbyEvent::LEFT, 11); // Ania leaves: her game goes too
+    s.Poll();
+    c.TakeLines();
+    CHECK(has("&play \"RTS : mapa\"") && has("&play \"RTS : mapa #2\"") && has("&user \"Ania\" \"\""));
+    c.lines.clear();
+
+    // hosting: the channel sees the game until the player is back in the channel
+    l = "/plays \"RPG : moja\" \"\" \"0a0b0c0d-0000-0000-0000-000000000001\"";
+    l.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)l.data(), l.size()));
+    CHECK(lobbies.calls.back() == "publish RPG : moja 0a0b0c0d-0000-0000-0000-000000000001");
+    l = "/join \"KnightShift\" \"\"";
+    l.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)l.data(), l.size()));
+    CHECK(std::find(lobbies.calls.begin(), lobbies.calls.end(), "unpublish") != lobbies.calls.end());
+    c.TakeLines();
+    c.lines.clear();
+    lobbies.Push(en::LobbyEvent::JOINED, 11, "Ania");
+    s.Poll();
+    c.TakeLines();
     c.lines.clear();
 
     // another channel: a new lobby, the old players go

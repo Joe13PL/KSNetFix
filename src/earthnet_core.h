@@ -87,6 +87,8 @@ class Backend {
     // "New RTS/RPG game": default approves at once; the client then hosts and calls OnGameHosted.
     virtual void OnHostRequest(Session& s, const std::string& name, const std::string& password);
     virtual void OnGameHosted(Session& s, const std::string& name, const std::string& guid) { (void)s; (void)name; (void)guid; }
+    // Join a listed game (/playc "guid" "name" "password"). The default: no such game.
+    virtual void OnJoinGame(Session& s, const std::string& guid, const std::string& name, const std::string& password);
     // Ranking tabs; at most 10 rows are shown (the client has room for no more).
     virtual std::vector<LadderRow> OnLadder(Session& s, LadderPeriod period) { (void)s; (void)period; return {}; }
     // Called often (about 10x a second) on the session's thread: apply what arrived from outside.
@@ -147,6 +149,8 @@ class Session {
     void GameAdded(const std::string& name, uint32_t ipv4, const std::string& guid);
     void GameUpdated(const std::string& name, int players, int maxPlayers, const std::string& level);
     void GameRemoved(const std::string& name);
+    // Answer to /playc: ok -> the client joins ipv4 (+0xE8(0, ipv4) -> 0x82E920); not ok -> "wrong password".
+    void JoinReply(const std::string& guid, const std::string& name, bool ok, uint32_t ipv4);
     // Counters above the chat: players (logged in / all), games (open / all), channels.
     void Stats(int players, int allPlayers, int games, int allGames, int channels);
     void Ladder(LadderPeriod period, const std::vector<LadderRow>& rows);
@@ -249,8 +253,10 @@ struct LobbyMember {
     std::string name; // Steam name as a SteamNet nick (SanitizeNick)
 };
 struct LobbyEvent {
-    enum Kind { ENTERED, ENTER_FAILED, JOINED, LEFT, SAY, WHISPER, CHANNELS } kind = ENTERED;
-    std::string channel, text;
+    enum Kind { ENTERED, ENTER_FAILED, JOINED, LEFT, SAY, WHISPER, CHANNELS, GAME_ADDED, GAME_REMOVED } kind = ENTERED;
+    std::string channel, text;          // GAME_*: text = the game's name
+    std::string guid;                   // GAME_ADDED: the game's session GUID
+    uint32_t ipv4 = 0;                  // GAME_ADDED: address the client joins (the transport maps it)
     LobbyMember member;                // JOINED, LEFT (id), SAY / WHISPER (sender)
     std::vector<LobbyMember> members;  // ENTERED: everybody else in the channel
     std::vector<std::string> channels; // CHANNELS: every SteamNet channel
@@ -281,6 +287,9 @@ class LobbyService {
     virtual void Say(const std::string& text) = 0;
     virtual void Whisper(uint64_t to, const std::string& text) = 0;
     virtual void RefreshChannels() = 0;
+    // The game this player hosts, shown to the channel (until Unpublish or leaving the channel).
+    virtual void PublishGame(const std::string& name, const std::string& guid) = 0;
+    virtual void UnpublishGame() = 0;
     virtual void Stop() = 0; // leaves the channel
 };
 
@@ -300,6 +309,7 @@ class OnlineBackend : public RankedBackend {
     void OnWhisper(Session& s, const std::string& to, const std::string& text) override;
     void OnLogout(Session& s) override;
     void OnGameHosted(Session& s, const std::string& name, const std::string& guid) override;
+    void OnJoinGame(Session& s, const std::string& guid, const std::string& name, const std::string& password) override;
     void Poll(Session& s) override;
 
   private:
@@ -307,6 +317,15 @@ class OnlineBackend : public RankedBackend {
     void AddMember(Session& s, const LobbyMember& m);
     std::string UniqueName(const std::string& name, uint64_t id) const;
     void Stats(Session& s);
+    void RemoveGames(Session& s, uint64_t owner); // 0: every game of other players
+    void EndOwnGames(Session& s);
+
+    struct Game {
+        uint64_t owner;
+        std::string guid;
+        uint32_t ipv4;
+    };
+    std::map<std::string, Game> remote_; // listed name -> a game of another player
 
     LobbyService& lobbies_;
     std::shared_ptr<LobbyEvents> events_;

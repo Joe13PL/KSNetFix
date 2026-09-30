@@ -232,8 +232,39 @@ std::wstring AddressHost(IDirectPlay8Address_* a) {
     return buf;
 }
 
-// "ks-lobby:<id>", "steam:<id>" or a bare 17-digit Steam/lobby id typed as IP.
+// SteamNet lists games of other players under made-up addresses 10.83.x.y; joining one (the game
+// connects to that "IP") goes to the game's Steam lobby.
+CRITICAL_SECTION g_vaddrCs;
+std::map<uint32_t, uint64_t> g_vaddrLobby;
+std::map<uint64_t, uint32_t> g_lobbyVaddr;
+struct VaddrInit {
+    VaddrInit() { InitializeCriticalSection(&g_vaddrCs); }
+} g_vaddrInit;
+
+uint32_t VirtualAddress(uint64_t lobby) {
+    Lock l(&g_vaddrCs);
+    auto it = g_lobbyVaddr.find(lobby);
+    if (it != g_lobbyVaddr.end()) return it->second;
+    uint32_t n = (uint32_t)g_lobbyVaddr.size();
+    uint32_t ip = 10u | 83u << 8 | ((n / 254) & 0xff) << 16 | (n % 254 + 1) << 24; // bytes 10.83.hi.lo
+    g_lobbyVaddr[lobby] = ip;
+    g_vaddrLobby[ip] = lobby;
+    return ip;
+}
+
+uint64_t VirtualLobby(const std::wstring& h) {
+    unsigned b[4];
+    wchar_t end;
+    if (swscanf(h.c_str(), L"%u.%u.%u.%u%lc", &b[0], &b[1], &b[2], &b[3], &end) != 4) return 0;
+    if (b[0] > 255 || b[1] > 255 || b[2] > 255 || b[3] > 255) return 0;
+    Lock l(&g_vaddrCs);
+    auto it = g_vaddrLobby.find(b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24);
+    return it == g_vaddrLobby.end() ? 0 : it->second;
+}
+
+// "ks-lobby:<id>", "steam:<id>", a bare 17-digit Steam/lobby id typed as IP, or a SteamNet game address.
 uint64_t ParseSteamTarget(const std::wstring& h) {
+    if (uint64_t lobby = VirtualLobby(h)) return lobby;
     const wchar_t* s = h.c_str();
     if (!_wcsnicmp(s, L"ks-lobby:", 9)) s += 9;
     else if (!_wcsnicmp(s, L"steam:", 6)) s += 6;
@@ -2020,6 +2051,8 @@ class SteamLobbies {
     std::string want;       // the channel we are entering / in
     uint32_t seq = 0;       // bumped by every Enter: late answers are dropped
     std::map<uint64_t, bool> unnamed; // members whose Steam name was not known yet
+    std::string pendingGame;          // our hosted game, waiting for its lobby: "guid\nname"
+    std::map<uint64_t, std::string> memberGames; // what each member publishes under "game"
 
     CCallResult<SteamLobbies, LobbyMatchList_t> crFind, crList;
     CCallResult<SteamLobbies, LobbyEnter_t> crEnter;
@@ -2028,6 +2061,7 @@ class SteamLobbies {
     STEAM_CALLBACK(SteamLobbies, OnChatUpdate, LobbyChatUpdate_t);
     STEAM_CALLBACK(SteamLobbies, OnChatMsg, LobbyChatMsg_t);
     STEAM_CALLBACK(SteamLobbies, OnPersona, PersonaStateChange_t);
+    STEAM_CALLBACK(SteamLobbies, OnMemberData, LobbyDataUpdate_t);
 
     void Push(en::LobbyEvent e) {
         if (events) events->Push(std::move(e));
@@ -2060,6 +2094,49 @@ class SteamLobbies {
         if (lobby) SteamMatchmaking()->LeaveLobby(CSteamID(lobby));
         lobby = 0;
         unnamed.clear();
+        memberGames.clear();
+    }
+
+    // Member data "game" = "<game lobby>\n<guid>\n<name>": the game a member hosts.
+    void ReadGame(uint64_t member) {
+        std::string v = SteamMatchmaking()->GetLobbyMemberData(CSteamID(lobby), CSteamID(member), "game");
+        std::string& old = memberGames[member];
+        if (v == old) return;
+        old = v;
+        en::LobbyEvent e;
+        e.member.id = member;
+        size_t a = v.find('\n'), b = a == std::string::npos ? a : v.find('\n', a + 1);
+        uint64_t gameLobby = b == std::string::npos ? 0 : _strtoui64(v.c_str(), nullptr, 10);
+        if (!gameLobby || !CSteamID(gameLobby).IsLobby()) {
+            e.kind = en::LobbyEvent::GAME_REMOVED;
+        } else {
+            e.kind = en::LobbyEvent::GAME_ADDED;
+            e.guid = v.substr(a + 1, b - a - 1);
+            e.text = en::SanitizeNick(v.substr(b + 1)).empty() ? "Gra" : v.substr(b + 1, 32);
+            e.ipv4 = VirtualAddress(gameLobby);
+            Log("steamnet: game \"%s\" of %llu in lobby %llu -> %u.%u.%u.%u", e.text.c_str(), (unsigned long long)member,
+                (unsigned long long)gameLobby, e.ipv4 & 0xff, e.ipv4 >> 8 & 0xff, e.ipv4 >> 16 & 0xff, e.ipv4 >> 24);
+        }
+        Push(e);
+    }
+    void PublishGame(const std::string& name, const std::string& guid) { pendingGame = guid + "\n" + name; }
+    void UnpublishGame() {
+        pendingGame.clear();
+        if (lobby) SteamMatchmaking()->SetLobbyMemberData(CSteamID(lobby), "game", "");
+    }
+    void PublishPending() {
+        // the transport creates the game's lobby a moment after the game asked to host
+        if (pendingGame.empty() || !lobby) return;
+        uint64_t gameLobby = 0;
+        {
+            Lock l(&g_svc->cs);
+            if (g_svc->peer && g_svc->peer->st == St::Hosting) gameLobby = g_svc->peer->lobby;
+        }
+        if (!gameLobby) return;
+        std::string v = std::to_string(gameLobby) + "\n" + pendingGame;
+        SteamMatchmaking()->SetLobbyMemberData(CSteamID(lobby), "game", v.c_str());
+        Log("steamnet: channel \"%s\": our game in lobby %llu is listed", want.c_str(), (unsigned long long)gameLobby);
+        pendingGame.clear();
     }
 
     void Enter(const std::string& channel) {
@@ -2130,6 +2207,7 @@ class SteamLobbies {
         Log("steamnet: channel \"%s\": in lobby %llu with %d other players", want.c_str(), (unsigned long long)lobby,
             (int)e.members.size());
         Push(e);
+        for (const en::LobbyMember& m : e.members) ReadGame(m.id); // games they host now
     }
 
     void Say(const std::string& text) {
@@ -2146,6 +2224,7 @@ class SteamLobbies {
                                 kWhisperChannel);
     }
     void Tick() {
+        PublishPending();
         SteamNetworkingMessage_t* msgs[16];
         int n = NM()->ReceiveMessagesOnChannel(kWhisperChannel, msgs, 16);
         for (int i = 0; i < n; i++) {
@@ -2202,6 +2281,7 @@ void SteamLobbies::OnChatUpdate(LobbyChatUpdate_t* p) {
     } else {
         e.kind = en::LobbyEvent::LEFT; // left, disconnected, kicked, banned
         unnamed.erase(e.member.id);
+        memberGames.erase(e.member.id);
     }
     Push(e);
 }
@@ -2219,6 +2299,11 @@ void SteamLobbies::OnChatMsg(LobbyChatMsg_t* p) {
     e.member = Member(from.ConvertToUint64());
     e.text.assign(buf + 1, strnlen(buf + 1, (size_t)n - 1));
     Push(e);
+}
+
+void SteamLobbies::OnMemberData(LobbyDataUpdate_t* p) {
+    if (!lobby || p->m_ulSteamIDLobby != lobby || p->m_ulSteamIDMember == lobby || p->m_ulSteamIDMember == g_svc->me) return;
+    ReadGame(p->m_ulSteamIDMember);
 }
 
 void SteamLobbies::OnPersona(PersonaStateChange_t* p) {
@@ -2272,6 +2357,10 @@ class SteamLobbyService : public en::LobbyService {
     void Say(const std::string& text) override { Run([text] { g_lobbies->Say(text); }); }
     void Whisper(uint64_t to, const std::string& text) override { Run([to, text] { g_lobbies->Whisper(to, text); }); }
     void RefreshChannels() override { Run([] { g_lobbies->RefreshChannels(); }); }
+    void PublishGame(const std::string& name, const std::string& guid) override {
+        Run([name, guid] { g_lobbies->PublishGame(name, guid); });
+    }
+    void UnpublishGame() override { Run([] { g_lobbies->UnpublishGame(); }); }
     void Stop() override {
         Run([] { g_lobbies->Stop(); });
         started_.reset();

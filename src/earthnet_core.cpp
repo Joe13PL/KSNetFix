@@ -498,6 +498,10 @@ void Session::OnClientLine(const std::string& line) {
             Log("game hosted \"%s\" %s", arg(1).c_str(), arg(3).c_str());
             backend_.OnGameHosted(*this, arg(1), arg(3));
         }
+    } else if (cmd == "/playc") {
+        // /playc "guid" "name" "password" joins a listed game (0x80BAD0)
+        Log("join request \"%s\"", arg(2).c_str());
+        backend_.OnJoinGame(*this, arg(1), arg(2), arg(3));
     } else if (cmd == "/ladder" || cmd == "/ladderm" || cmd == "/ladderw") {
         LadderPeriod p = cmd == "/ladder" ? LADDER_ALL : cmd == "/ladderm" ? LADDER_MONTH : LADDER_WEEK;
         Ladder(p, backend_.OnLadder(*this, p));
@@ -583,6 +587,11 @@ void Session::GameUpdated(const std::string& name, int players, int maxPlayers, 
     Line(l + buf);
 }
 void Session::GameRemoved(const std::string& name) { Line("&play " + Quote(name)); }
+void Session::JoinReply(const std::string& guid, const std::string& name, bool ok, uint32_t ipv4) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), ok ? " 1 %u" : " 0", ipv4);
+    Line("/playc " + Quote(guid) + " " + Quote(name) + buf);
+}
 void Session::Stats(int players, int allPlayers, int games, int allGames, int channels) {
     // 0x8239A0 shows "players b/a, games e/(d+e), channels c" for /syncstats a b c d e f g
     char buf[96];
@@ -602,6 +611,12 @@ void Session::Ladder(LadderPeriod period, const std::vector<LadderRow>& rows) {
         l += " " + Quote(r.nick) + buf;
     }
     Line(l);
+}
+
+void Backend::OnJoinGame(Session& s, const std::string& guid, const std::string& name, const std::string& password) {
+    (void)password;
+    s.GameRemoved(name);
+    s.JoinReply(guid, name, false, 0);
 }
 
 void Backend::OnHostRequest(Session& s, const std::string& name, const std::string& password) {
@@ -802,9 +817,7 @@ void OnlineBackend::OnJoin(Session& s, const std::string& channel, const std::st
         channels_.push_back(channel);
         s.ChannelAdded(channel, "");
     }
-    // /join also comes when the player leaves a game room: the games are over
-    for (const std::string& g : games_) s.GameRemoved(g);
-    games_.clear();
+    EndOwnGames(s); // /join also comes when the player leaves a game room: the game is over
     s.EnteredChannel(channel, ""); // clears the client's player list; it lists itself again
     if (channel == channel_ && entered_) {
         for (const auto& m : members_) s.UserEntered(m.second); // back from a game room
@@ -812,6 +825,7 @@ void OnlineBackend::OnJoin(Session& s, const std::string& channel, const std::st
         channel_ = channel;
         entered_ = false;
         members_.clear();
+        RemoveGames(s, 0);
         lobbies_.Enter(channel);
     }
     Stats(s);
@@ -849,7 +863,38 @@ void OnlineBackend::OnLogout(Session& s) {
 void OnlineBackend::OnGameHosted(Session& s, const std::string& name, const std::string& guid) {
     if (std::find(games_.begin(), games_.end(), name) == games_.end()) games_.push_back(name);
     s.GameAdded(name, 0, guid);
+    lobbies_.PublishGame(name, guid);
     Stats(s);
+}
+
+void OnlineBackend::EndOwnGames(Session& s) {
+    if (games_.empty()) return;
+    for (const std::string& g : games_) s.GameRemoved(g);
+    games_.clear();
+    lobbies_.UnpublishGame();
+}
+
+void OnlineBackend::RemoveGames(Session& s, uint64_t owner) {
+    for (auto it = remote_.begin(); it != remote_.end();) {
+        if (owner == 0 || it->second.owner == owner) {
+            s.GameRemoved(it->first);
+            it = remote_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+void OnlineBackend::OnJoinGame(Session& s, const std::string& guid, const std::string& name, const std::string& password) {
+    (void)password; // checked by the host's DirectPlay session
+    auto it = remote_.find(name);
+    if (it == remote_.end()) {
+        s.ChannelMessage("SteamNet", "Gry " + name + " juz nie ma.");
+        s.GameRemoved(name);
+        s.JoinReply(guid, name, false, 0);
+        return;
+    }
+    s.JoinReply(guid, name, true, it->second.ipv4);
 }
 
 void OnlineBackend::Poll(Session& s) {
@@ -903,6 +948,7 @@ void OnlineBackend::Apply(Session& s, const LobbyEvent& e) {
         Stats(s);
         break;
     case LobbyEvent::LEFT: {
+        RemoveGames(s, e.member.id);
         auto it = members_.find(e.member.id);
         if (it == members_.end()) return;
         s.UserLeft(it->second);
@@ -910,6 +956,21 @@ void OnlineBackend::Apply(Session& s, const LobbyEvent& e) {
         Stats(s);
         break;
     }
+    case LobbyEvent::GAME_ADDED: {
+        if (!entered_) return;
+        RemoveGames(s, e.member.id); // one game per player
+        std::string name = e.text.empty() ? "Gra" : e.text, n = name;
+        for (int k = 2; remote_.count(n) || std::find(games_.begin(), games_.end(), n) != games_.end(); k++)
+            n = name + " #" + std::to_string(k);
+        remote_[n] = Game{e.member.id, e.guid, e.ipv4};
+        s.GameAdded(n, e.ipv4, e.guid);
+        Stats(s);
+        break;
+    }
+    case LobbyEvent::GAME_REMOVED:
+        RemoveGames(s, e.member.id);
+        Stats(s);
+        break;
     case LobbyEvent::SAY: {
         auto it = members_.find(e.member.id);
         s.ChannelMessage(it != members_.end() ? it->second : UniqueName(e.member.name, e.member.id), e.text);
@@ -941,7 +1002,8 @@ void OnlineBackend::Apply(Session& s, const LobbyEvent& e) {
 
 void OnlineBackend::Stats(Session& s) {
     int players = 1 + (int)members_.size();
-    s.Stats(players, players, (int)games_.size(), (int)games_.size(), (int)channels_.size());
+    int games = (int)(games_.size() + remote_.size());
+    s.Stats(players, players, games, games, (int)channels_.size());
 }
 
 bool MemoryStore::Load(const std::string& nick, const std::string& key, std::vector<uint8_t>& data) {

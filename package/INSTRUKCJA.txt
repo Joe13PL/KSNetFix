@@ -101,8 +101,8 @@ dowolną nazwę). Kanały, lista graczy i czat są wspólne dla wszystkich gracz
 SteamNet (przez lobby Steam): widzisz innych, piszesz na kanale, "Prywatnie"
 wysyła szept do zaznaczonego gracza, "Nowy kanał" zakłada kanał o nazwie
 wpisanej w pole czatu. Bohater RPG zapisuje się w folderze SteamNet w katalogu
-gry, przypisany do konta Steam. Lista gier i dołączanie do gier z SteamNet
-pojawią się w następnej wersji (na razie dołączaj przez TCP/IP).
+gry, przypisany do konta Steam. Gry założone przez innych na Twoim kanale
+widać w zakładce "Gry" - kliknięcie dołącza przez Steam.
 Tryb offline (tylko Ty, jeden kanał): w sekcji [SteamNet] ustaw Online=0.
 Ranking (przycisk "Ranking") jest wspólny dla wszystkich graczy SteamNet i
 trzymany na tablicach wyników Steam. Po pierwszym zalogowaniu jesteś w nim

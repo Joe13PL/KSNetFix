@@ -160,6 +160,8 @@ struct FakeLobbies : en::LobbyService {
     void Say(const std::string& text) override { said.push_back(text); }
     void Whisper(uint64_t, const std::string&) override {}
     void RefreshChannels() override {}
+    void PublishGame(const std::string&, const std::string&) override {}
+    void UnpublishGame() override {}
     void Stop() override {}
 } g_lobbies;
 
