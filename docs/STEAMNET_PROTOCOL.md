@@ -39,8 +39,14 @@ długość z nagłówka napisu) synchronicznie, gdy dostanie powitanie serwera (
 ten napis na nazwę konta Steam (bez `"` i `%`, najwyżej 16 bajtów) na wątku serwera **tuż przed wysłaniem
 powitania**; sam napis powstaje wcześniej, w naszym `connect()` na wątku gry (alokator gry). Okno logowania się nie
 pokazuje, gra zapisuje login w profilu gracza. Sprawdzone emulacją `0x7FF8D0`.
-Wcześniejsze punkty nie działają: w `WSAAsyncGetHostByName` (2.5.6) i w `connect()` (2.5.7) gra i tak wysyłała
-login z profilu — po połączeniu wpisuje go jeszcze raz (m.in. „najszybszy serwer” woła `0x7FF8D0` drugi raz z IP).
+**Który obiekt:** łączy się nie zawsze obiekt spod `0xF625B0` — obsługa wyniku logowania (`0x81F9C0`) robi
+`DAT_00f625b0 = this` dopiero po sukcesie („najszybszy serwer” łączy się własnym obiektem). SteamNet bierze obiekt
+z bufora, który `0x7FF8D0` podaje do `WSAAsyncGetHostByName` (`this + 0x4AB0`, sprawdzone emulacją), i sprawdza
+vtable `0x8FABA0`. 2.5.6–2.5.8 zmieniały login w obiekcie globalnym, więc gra i tak logowała się starym loginem.
+
+**Siebie na liście graczy** gra rozpoznaje po id `+0x4EEC` i GUID `+0x506C` (`0x8207D0`): wpis z innymi jest
+rysowany kolorem „inny gracz” (`translateEarthNetNewUserFormat`, żółty). GUID to ostatnie 16 bajtów pakietu
+logowania; SteamNet odsyła go w `$user` gracza (tekst GUID-u = bajty w tej samej kolejności, sprawdzone emulacją).
 Zapisane dane gracza (`/setplayerdata`, bohater RPG) są kluczowane identyfikatorem konta (`steam_<SteamID>`),
 więc zmiana nazwy na Steam ich nie gubi; dane zapisane wcześniej pod nickiem są przenoszone przy pierwszym odczycie.
 

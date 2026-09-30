@@ -398,6 +398,7 @@ bool Session::OnPacket(const uint8_t* p, size_t n) {
     uint32_t guids = r.u32();
     if (guids <= 64) r.skip(16 * guids);
     li.reconnect = r.u32() != 0;
+    if (r.ok && n >= 16) guid_ = GuidString(p + n - 16);
     if (!r.ok) {
         Log("malformed login packet (%u bytes)", (unsigned)n);
         Writer w;
@@ -628,7 +629,7 @@ void LocalBackend::OnJoin(Session& s, const std::string& channel, const std::str
         s.ChannelAdded(channel, "");
     }
     s.EnteredChannel(channel, "");
-    s.UserEntered(s.PublicName());
+    s.UserEntered(s.PublicName(), s.OwnGuid());
     // The client sends /join when it leaves a game room, and says nothing else about the game:
     // the player's games are over.
     for (const std::string& g : games_) s.GameRemoved(g);
@@ -647,6 +648,13 @@ void LocalBackend::OnSay(Session& s, const std::string& text) { s.ChannelMessage
 void LocalBackend::OnWhisper(Session& s, const std::string& to, const std::string& text) {
     s.WhisperTo(to, text);
     if (to == s.Nick()) s.WhisperFrom(s.Nick(), text);
+}
+
+std::string GuidString(const uint8_t g[16]) {
+    char s[40];
+    snprintf(s, sizeof(s), "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", g[3], g[2], g[1], g[0],
+             g[5], g[4], g[7], g[6], g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]);
+    return s;
 }
 
 std::string SanitizeNick(const std::string& ansi) {

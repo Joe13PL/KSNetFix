@@ -363,6 +363,8 @@ static void TestSession() {
     if (c.lines.size() == 5) {
         CHECK(GameTokens(c.lines[1])[0] == "/join" && GameTokens(c.lines[1])[1] == "Polanie");
         CHECK(GameTokens(c.lines[2])[0] == "$user" && GameTokens(c.lines[2])[1] == "Joe");
+        // with the client's own GUID from the end of its login packet: listed as the player himself
+        CHECK(GameTokens(c.lines[2])[2] == "0" && GameTokens(c.lines[2])[4] == "00030201-0000-0000-0000-000000000000");
         CHECK(c.lines[3] == "&play \"RTS : test\"");
         CHECK(c.lines[4] == "/syncstats 1 1 0 0 2 0 0");
     }
@@ -413,6 +415,9 @@ struct FakeRanking : en::RankingService {
 };
 
 static void TestSteamNames() {
+    uint8_t g[16];
+    for (int i = 0; i < 16; i++) g[i] = (uint8_t)(i + 1);
+    CHECK(en::GuidString(g) == "04030201-0605-0807-090a-0b0c0d0e0f10"); // as the client writes it (/plays)
     CHECK(en::SanitizeNick("Wojtek") == "Wojtek");
     CHECK(en::SanitizeNick("  Jan \"Kowal\"  100% ") == "Jan 'Kowal' 100_");
     CHECK(en::SanitizeNick("a\tb\n\x01" "c") == "a b c");

@@ -40,6 +40,7 @@ SteamNetAccount (*g_accountFn)();
 SteamNetAccount g_account;    // Steam account the game logs in with (set in our connect())
 std::string g_previousLogin;  // the game's own login it replaces
 uint32_t* g_pendingLogin;     // login string waiting for the hello reply
+uint8_t* g_loginClient;       // the client object connecting to SteamNet
 void InstallSteamLogin();
 char g_gameDir[MAX_PATH];
 
@@ -288,6 +289,27 @@ bool IsOurHost(const char* name) {
 // the login first, and on the "fastest server" path it runs again after the lookup and after our
 // connect(), writing the profile's login back (2.5.6, 2.5.7). The string itself is made here, in our
 // connect() on the game thread, with the game's allocator. The game keeps the name in its profile.
+// The client object that connects. Not always the global one: the login result (0x81F9C0) makes
+// the connecting object the global only when it succeeds ("fastest server" works on its own
+// object). 0x7FF8D0 passes a buffer inside the object to the host lookup.
+void CaptureClient(char* lookupBuf) {
+    uint8_t* c = nullptr;
+    if (A.lookupBuffer && A.clientVtable && lookupBuf) {
+        c = (uint8_t*)lookupBuf - A.lookupBuffer;
+        if (IsBadReadPtr(c, 4) || G<uint32_t>((uint32_t)(uintptr_t)c) != A.clientVtable) c = nullptr;
+    }
+    EnterCriticalSection(&g_cs);
+    g_loginClient = c;
+    LeaveCriticalSection(&g_cs);
+}
+
+uint8_t* LoginClient() {
+    EnterCriticalSection(&g_cs);
+    uint8_t* c = g_loginClient;
+    LeaveCriticalSection(&g_cs);
+    return c ? c : A.client ? G<uint8_t*>(A.client) : nullptr;
+}
+
 void PrepareSteamAccount() {
     SteamNetAccount acc;
     if (S.steamLogin && g_accountFn && A.client && A.memAlloc) acc = g_accountFn();
@@ -301,7 +323,7 @@ void PrepareSteamAccount() {
         return;
     }
     std::string previous;
-    uint8_t* client = G<uint8_t*>(A.client);
+    uint8_t* client = LoginClient();
     uint32_t* cur = client ? G<uint32_t*>((uint32_t)(uintptr_t)(client + 0x4A80)) : nullptr;
     if (cur && cur[2] > 0 && cur[2] < 64) {
         char a[256] = {0};
@@ -338,7 +360,7 @@ void InstallSteamLogin() {
     g_pendingLogin = nullptr;
     std::string name = g_account.name;
     LeaveCriticalSection(&g_cs);
-    uint8_t* client = G<uint8_t*>(A.client);
+    uint8_t* client = LoginClient();
     if (!str || !client) return;
     uint32_t*& login = G<uint32_t*>((uint32_t)(uintptr_t)(client + 0x4A80));
     uint32_t* old = login;
@@ -352,6 +374,7 @@ void InstallSteamLogin() {
 
 HANDLE WINAPI HookGetHostByName(HWND wnd, u_int msg, const char* name, char* buf, int buflen) {
     if (IsOurHost(name) && EnsureServer()) {
+        CaptureClient(buf);
         InterlockedIncrement(&g_pendingRedirects);
         Log("steamnet: \"%s\" -> local server", name);
         return g_realGetHostByName(wnd, msg, "127.0.0.1", buf, buflen);

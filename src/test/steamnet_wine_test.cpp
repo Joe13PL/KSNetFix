@@ -69,8 +69,12 @@ static int g_fail = 0;
 // "Game" data the hooks look at.
 static wchar_t g_menuString[9] = L"EarthNet";
 // EarthNet client object with the login string at +0x4A80, as 0x7FF8D0 leaves it before resolving
+// The global client pointer still names an older object while "fastest server" connects with
+// its own (the login result makes it the global later): the login must change in the connecting one.
+static const uint32_t kClientVtable = 0x008FABA0;
 static uint8_t g_clientObj[0x5200];
-static uint8_t* g_clientPtr = g_clientObj;
+static uint8_t g_globalClientObj[0x5200];
+static uint8_t* g_clientPtr = g_globalClientObj;
 static uint32_t g_oldLogin[8] = {1, 3, 3, 0x006f004a, 0x00000065}; // L"Joe"
 static void* __cdecl GameAlloc(size_t n) { return malloc(n); }
 static SteamNetAccount SteamAccount() {
@@ -160,7 +164,9 @@ int main() {
     SteamNetSettings st;
     strcpy(st.welcome, "Witaj w SteamNet (test)");
     SteamNetGameAddrs addrs = {(uint32_t)(uintptr_t)g_menuString, (uint32_t)(uintptr_t)g_identity,
-                               (uint32_t)(uintptr_t)&g_clientPtr, (uint32_t)(uintptr_t)&GameAlloc};
+                               (uint32_t)(uintptr_t)&g_clientPtr, kClientVtable, 0x4AB0, (uint32_t)(uintptr_t)&GameAlloc};
+    memcpy(g_clientObj, &kClientVtable, 4);
+    memcpy(g_globalClientObj, &kClientVtable, 4);
     *(uint32_t**)(g_clientObj + 0x4A80) = g_oldLogin;
     CHECK(SteamNet_Install(st, addrs));
     SteamNet_SetRanking(&g_ranking);
@@ -181,8 +187,8 @@ int main() {
     WSADATA wd;
     WSAStartup(MAKEWORD(2, 2), &wd);
     HWND wnd = CreateWindowExA(0, "STATIC", "en", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
-    static char hbuf[MAXGETHOSTSTRUCT];
-    CHECK(ghbn(wnd, WM_USER + 1, "steam", hbuf, sizeof(hbuf)) != nullptr);
+    char* hbuf = (char*)g_clientObj + 0x4AB0; // 0x7FF8D0 resolves into the client object
+    CHECK(ghbn(wnd, WM_USER + 1, "steam", hbuf, MAXGETHOSTSTRUCT) != nullptr);
     // resolving the name alone leaves the login alone ("fastest server" rewrites it afterwards)
     CHECK(*(uint32_t**)(g_clientObj + 0x4A80) == g_oldLogin);
     MSG m;
@@ -218,6 +224,7 @@ int main() {
         uint32_t* login = *(uint32_t**)(g_clientObj + 0x4A80);
         CHECK(login != g_oldLogin && g_oldLogin[0] == 0);
         CHECK(login[0] == 1 && login[1] == 6 && login[2] == 6 && wcscmp((wchar_t*)(login + 3), L"Wojtek") == 0);
+        CHECK(*(uint32_t**)(g_globalClientObj + 0x4A80) == nullptr); // the global object is left alone
     }
 
     en::Writer login;

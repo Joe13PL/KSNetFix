@@ -20,8 +20,10 @@ void SteamNet_LoadConfig(const char* iniPath, SteamNetSettings& s);
 struct SteamNetGameAddrs {
     uint32_t nameString;    // L"EarthNet" in the connection type list
     uint32_t identity;      // u64 identity from the CD key (login signature)
-    uint32_t client = 0;    // global holding the EarthNet client object (0 = no Steam login)
-    uint32_t memAlloc = 0;  // the game's allocator, void* __cdecl(size_t)
+    uint32_t client = 0;       // global holding the EarthNet client object (0 = no Steam login)
+    uint32_t clientVtable = 0; // the client's vtable (checks a pointer really is a client)
+    uint32_t lookupBuffer = 0; // offset of the host lookup buffer in the client object
+    uint32_t memAlloc = 0;     // the game's allocator, void* __cdecl(size_t)
 };
 
 // Renames the menu entry and hooks the game's winsock lookups. Call from DllMain.

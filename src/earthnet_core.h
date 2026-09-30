@@ -29,6 +29,8 @@ std::vector<std::string> Tokenize(const std::string& line);
 // A Steam name (already in the game's ANSI code page) as a SteamNet nick: no control
 // characters, no " or %, single spaces, at most 16 bytes. Empty if nothing is left.
 std::string SanitizeNick(const std::string& ansi);
+// "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" as the client writes and reads GUIDs.
+std::string GuidString(const uint8_t g[16]);
 
 struct Writer {
     std::vector<uint8_t> b;
@@ -120,6 +122,9 @@ class Session {
 
     const std::string& Nick() const { return nick_; }      // as the game logged in
     const std::string& PublicName() const { return cfg_.accountNick.empty() ? nick_ : cfg_.accountNick; }
+    // The client's own GUID (+0x506C, the end of its login packet): a player-list entry with it and
+    // id 0 is shown as the player himself (0x8207D0), anything else in the "other player" colour.
+    const std::string& OwnGuid() const { return guid_; }
     const std::string& Channel() const { return channel_; }
     bool LoggedIn() const { return state_ == LINES || state_ == BINARY; }
 
@@ -158,7 +163,7 @@ class Session {
     LogFn log_;
     State state_ = CLIENT_INFO;
     std::vector<uint8_t> in_;
-    std::string nick_, channel_;
+    std::string nick_, channel_, guid_;
     // pending binary block after a /setplayerdata line
     size_t binNeed_ = 0;
     std::string binNick_, binKey_;
