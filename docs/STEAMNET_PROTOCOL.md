@@ -32,7 +32,10 @@ bajtów ANSI bez zera.
 
 ### Odpowiedź na logowanie (`0x803820`)
 
-Błąd: `i32 kod≠0`, `napis komunikat` → vfunc `+0x9C(kod, komunikat)` i koniec.
+Błąd: `i32 kod≠0`, `napis komunikat` → vfunc `+0x9C(kod, komunikat)`. Klient zostaje w stanie 7 z otwartym połączeniem:
+okno logowania (`0x8259B0`, przycisk `0x3069`) wysyła kolejny pakiet logowania **tym samym połączeniem** (`0x819570`).
+Komunikat to `"tekst" ["nick do pola nazwy"]` (tokenizer `0x829B60`); tekst jest formatem `String_Format` — bez `%`.
+Pierwsze połączenie z listy serwerów ma pusty login i hasło: serwer odpowiada błędem, gra pokazuje okno logowania.
 
 Sukces (`i32 0`), dalej po kolei:
 

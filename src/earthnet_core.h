@@ -83,6 +83,7 @@ class PlayerStore {
 struct SessionConfig {
     std::string welcome = "SteamNet";
     std::string channel = "KnightShift";
+    std::string askName = "Podaj nazwe gracza (dowolna) i kliknij OK."; // no % (format string)
     uint64_t identity = 0;          // the game's own identity (login signature)
 };
 
