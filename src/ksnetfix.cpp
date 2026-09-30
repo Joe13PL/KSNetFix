@@ -29,7 +29,7 @@
 
 #pragma comment(lib, "winmm.lib")
 
-#define KSNETFIX_VERSION "2.2"
+#define KSNETFIX_VERSION "2.4"
 
 // ---------------------------------------------------------------------------
 // Per-build addresses (all verified by signature before use)
@@ -133,6 +133,10 @@ struct Config {
     int catchUpOnHost = 0;
     double catchUpGain = 0.5;       // extra speed per excess waiting turn (0.5 -> 1.5x at one waiting turn)
     double catchUpMaxSpeed = 3.0;   // wall-clock speed cap while catching up
+    int catchUpSmooth = 1;          // pace evenly spaced ticks by the average queue depth instead of extra ticks
+    double smoothTarget = 0.25;     // average turn markers waiting in the queue (0.25 = ~1 tick of slack per turn)
+    double smoothMinSpeed = 0.95;
+    double smoothMaxSpeed = 1.25;
     int desyncStreamMask = 0x3F;    // gameplay RNG streams; 6/7 (0x68C/0x690) drive visual effects and differ per camera
     int ackEveryTurns = 1;          // original engine: (maxTurnsAhead/2)+1 = 2
     int maxTurnsAhead = 5;          // host, original 3
@@ -177,6 +181,10 @@ static void LoadConfig() {
     cfg.catchUpOnHost          = I("CatchUpOnHost", cfg.catchUpOnHost);
     cfg.catchUpGain            = D("CatchUpGain", cfg.catchUpGain);
     cfg.catchUpMaxSpeed        = D("CatchUpMaxSpeed", cfg.catchUpMaxSpeed);
+    cfg.catchUpSmooth          = I("CatchUpSmooth", cfg.catchUpSmooth);
+    cfg.smoothTarget           = D("SmoothTarget", cfg.smoothTarget);
+    cfg.smoothMinSpeed         = D("SmoothMinSpeed", cfg.smoothMinSpeed);
+    cfg.smoothMaxSpeed         = D("SmoothMaxSpeed", cfg.smoothMaxSpeed);
     cfg.desyncStreamMask       = I("DesyncStreamMask", cfg.desyncStreamMask);
     cfg.ackEveryTurns          = I("AckEveryTurns", cfg.ackEveryTurns);
     cfg.maxTurnsAhead          = I("MaxTurnsAhead", cfg.maxTurnsAhead);
@@ -206,6 +214,12 @@ static void LoadConfig() {
     if (cfg.catchUpMaxSpeed < 1.0) cfg.catchUpMaxSpeed = 1.0;
     if (cfg.catchUpMaxSpeed > 8.0) cfg.catchUpMaxSpeed = 8.0;
     if (cfg.catchUpGain < 0.0) cfg.catchUpGain = 0.0;
+    if (cfg.smoothTarget < 0.0) cfg.smoothTarget = 0.0;
+    if (cfg.smoothTarget > 2.0) cfg.smoothTarget = 2.0;
+    if (cfg.smoothMinSpeed < 0.8) cfg.smoothMinSpeed = 0.8;
+    if (cfg.smoothMinSpeed > 1.0) cfg.smoothMinSpeed = 1.0;
+    if (cfg.smoothMaxSpeed < 1.0) cfg.smoothMaxSpeed = 1.0;
+    if (cfg.smoothMaxSpeed > 1.5) cfg.smoothMaxSpeed = 1.5;
     if (cfg.ackEveryTurns < 1) cfg.ackEveryTurns = 1;
     if (cfg.ackEveryTurns > 16) cfg.ackEveryTurns = 16;
     if (cfg.maxTurnsAhead < 0 || cfg.maxTurnsAhead > 12) cfg.maxTurnsAhead = 5;
@@ -754,6 +768,7 @@ struct DpnConnectionInfo {
 struct Stats {
     uint32_t ticks, simTicks, stallTicks, pausedTicks, catchUpTicks;
     uint32_t backlogSum, backlogMax;
+    double speedSum;
     uint32_t turnsAtStart;
     DWORD startMs;
 };
@@ -764,6 +779,7 @@ static struct Session {
     Stats total{}, win{};
     DWORD lastReport = 0;
     double catchUpAcc = 0.0;
+    double queueAvg = 0.0;          // smooth catch-up: moving average of the turn queue depth
 } S;
 
 typedef uint64_t(__cdecl* EngineClockFn)();
@@ -771,6 +787,9 @@ static uint64_t EngineNow() { return ((EngineClockFn)(uintptr_t)A->timerFn)(); }
 
 typedef void(__cdecl* PumpFn)();
 static PumpFn g_origPump;
+
+// Smooth catch-up leaves a real backlog (a hitch, a loading pause) to the extra-tick path.
+static const int kBurstBacklog = 3;
 
 static int CountTurnMarkers(uint8_t* in) {
     __try {
@@ -831,9 +850,10 @@ static void ReportWindow(const char* tag, const Stats& s, bool queryRtt = true) 
     if (!s.ticks) return;
     char rtt[256] = "";
     if (queryRtt) ReportRtts(rtt, sizeof(rtt));
-    Log("%s ticks=%u sim=%u stall=%u (%.1f%%) paused=%u catchup=%u backlog avg=%.2f max=%u turns=%u %s", tag,
-        s.ticks, s.simTicks, s.stallTicks, 100.0 * s.stallTicks / s.ticks, s.pausedTicks, s.catchUpTicks,
-        (double)s.backlogSum / s.ticks, s.backlogMax, G<uint32_t>(A->turnsExecuted) - s.turnsAtStart, rtt);
+    Log("%s ticks=%u sim=%u stall=%u (%.1f%%) paused=%u catchup=%u speed=%.3f backlog avg=%.2f max=%u turns=%u %s",
+        tag, s.ticks, s.simTicks, s.stallTicks, 100.0 * s.stallTicks / s.ticks, s.pausedTicks, s.catchUpTicks,
+        s.speedSum / s.ticks, (double)s.backlogSum / s.ticks, s.backlogMax, G<uint32_t>(A->turnsExecuted) - s.turnsAtStart,
+        rtt);
     if (cfg.desyncCheck) {
         EnterCriticalSection(&D.cs);
         Log("sync: checks=%u mismatches=%u legacyPackets=%u raceSkips=%u compareMask=0x%02X", D.checks, D.mismatches,
@@ -862,8 +882,9 @@ static void EndSession() {
     S.active = false;
 }
 
-static void Account(Stats& s, bool sim, bool stall, bool paused, bool caught, int backlog) {
+static void Account(Stats& s, bool sim, bool stall, bool paused, bool caught, int backlog, double speed) {
     s.ticks++;
+    s.speedSum += speed;
     if (sim) s.simTicks++;
     if (stall) s.stallTicks++;
     if (paused) s.pausedTicks++;
@@ -898,13 +919,30 @@ static void AfterPump() {
     int backlog = cin ? CountTurnMarkers(cin) : 0;
 
     bool caught = false;
-    if (cfg.catchUp && cin && !paused && (!S.host || cfg.catchUpOnHost) && backlog > cfg.catchUpTarget) {
+    double speed = 1.0;
+    bool active = cfg.catchUp && cin && !paused && (!S.host || cfg.catchUpOnHost);
+    int burstTarget = cfg.catchUpSmooth ? kBurstBacklog - 1 : cfg.catchUpTarget;
+    if (active && cfg.catchUpSmooth && backlog < kBurstBacklog) {
+        // Change the tick period a little instead of adding ticks: the loop sleeps until
+        // nextTickTime after every tick, so moving it by (period/speed - period) spaces the
+        // ticks evenly at `speed`. The average queue depth settles at SmoothTarget - each
+        // turn is executed shortly after it arrives, and the simulation steps stay regular
+        // (extra ticks run two steps inside one frame and then wait for the next turn,
+        // which the joined player sees as choppy movement).
+        S.catchUpAcc = 0.0;
+        S.queueAvg += 0.03 * (backlog - S.queueAvg);
+        speed = 1.0 + 0.4 * (S.queueAvg - cfg.smoothTarget);
+        if (speed < cfg.smoothMinSpeed) speed = cfg.smoothMinSpeed;
+        if (speed > cfg.smoothMaxSpeed) speed = cfg.smoothMaxSpeed;
+        uint64_t period = G<uint64_t>(A->tickPeriod);
+        G<uint64_t>(A->nextTickTime) += (uint64_t)((int64_t)(period / speed) - (int64_t)period);
+    } else if (active && backlog > burstTarget) {
         // Run whole extra ticks. After each tick the loop re-checks the schedule
         // and keeps going *without* handing the frame to the renderer while it
         // is behind, so pushing the schedule back by more than one period makes
         // it execute one more NetPump + simulation step right away. Every tick
         // is still a complete engine tick, so the turn/tick contract holds.
-        double speed = 1.0 + (backlog - cfg.catchUpTarget) * cfg.catchUpGain;
+        speed = 1.0 + (backlog - burstTarget) * cfg.catchUpGain;
         if (speed > cfg.catchUpMaxSpeed) speed = cfg.catchUpMaxSpeed;
         S.catchUpAcc += speed - 1.0;
         if (S.catchUpAcc >= 1.0) {
@@ -920,8 +958,8 @@ static void AfterPump() {
         S.catchUpAcc = 0.0;
     }
 
-    Account(S.total, sim, stall, paused, caught, backlog);
-    Account(S.win, sim, stall, paused, caught, backlog);
+    Account(S.total, sim, stall, paused, caught, backlog, speed);
+    Account(S.win, sim, stall, paused, caught, backlog, speed);
 
     DWORD now = GetTickCount();
     if (now - S.lastReport >= (DWORD)cfg.logInterval * 1000) {
@@ -1114,8 +1152,13 @@ static void Install() {
 
     g_origPump = (PumpFn)(uintptr_t)A->pumpFn;
     Log("net pump hook: %s", WriteRel32(A->pumpCallSite, 0xE8, (void*)&PumpHook) ? "ok" : "FAILED");
-    Log("catch-up: %s target=%d gain=%.2f maxSpeed=%.1fx host=%d", cfg.catchUp ? "on" : "off", cfg.catchUpTarget,
-        cfg.catchUpGain, cfg.catchUpMaxSpeed, cfg.catchUpOnHost);
+    if (cfg.catchUpSmooth)
+        Log("catch-up: %s smooth target=%.2f speed=%.2f..%.2fx (burst from %d turns: gain=%.2f maxSpeed=%.1fx) host=%d",
+            cfg.catchUp ? "on" : "off", cfg.smoothTarget, cfg.smoothMinSpeed, cfg.smoothMaxSpeed, kBurstBacklog, cfg.catchUpGain,
+            cfg.catchUpMaxSpeed, cfg.catchUpOnHost);
+    else
+        Log("catch-up: %s extra ticks target=%d gain=%.2f maxSpeed=%.1fx host=%d", cfg.catchUp ? "on" : "off",
+            cfg.catchUpTarget, cfg.catchUpGain, cfg.catchUpMaxSpeed, cfg.catchUpOnHost);
     Log("host limits: maxTurnsAhead=%d maxTurnSpread=%d", cfg.maxTurnsAhead, cfg.maxTurnSpread);
 
     if (cfg.rngMonitor || cfg.rngIsolation || cfg.desyncCheck) {

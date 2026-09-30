@@ -1,0 +1,60 @@
+# Tag push vX.Y -> builds KSNetFix with MSVC (package.sh) and publishes the GitHub release
+# with dist/KSNetFix-X.Y.zip. Release text: docs/release-notes/vX.Y.md (+ SHA-256 of the zip).
+name: release
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'existing tag to (re)build, e.g. v2.3'
+        required: true
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      # Steamworks SDK as bundled by the steamworks-sys 0.13.0 crate (same steam_api.dll as 2.0-2.2)
+      STEAMWORKS_CRATE: https://static.crates.io/crates/steamworks-sys/steamworks-sys-0.13.0.crate
+      STEAM_API_DLL_SHA256: fdafb7c65ec7d4182b42bf92cc8671c68e4dc547cc6e613899d2618a47eb65da
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - name: Steamworks SDK
+        run: |
+          curl -fsSL -A "KSNetFix release build" -o sw.crate "$STEAMWORKS_CRATE"
+          mkdir sw && tar -xzf sw.crate -C sw
+          mv sw/*/lib/steam sdk
+          echo "$STEAM_API_DLL_SHA256  sdk/redistributable_bin/steam_api.dll" | sha256sum -c
+      - name: Build and pack
+        run: |
+          VER="$(sed -n 's/^#define KSNETFIX_VERSION "\(.*\)".*/\1/p' src/ksnetfix.cpp | tr -d '\r')"
+          [ "v$VER" = "$TAG" ] || { echo "tag $TAG does not match KSNETFIX_VERSION $VER" >&2; exit 1; }
+          VS="$("/c/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe" -latest -products '*' \
+                -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | tr -d '\r')"
+          MSVC="$(cygpath -m "$VS")/VC/Tools/MSVC"
+          export VCTOOLS="$MSVC/$(ls "$MSVC" | sort -V | tail -1)"
+          ./package.sh
+          echo "VER=$VER" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KSNetFix-${{ env.VER }}
+          path: dist/KSNetFix-${{ env.VER }}.zip
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ZIP="dist/KSNetFix-$VER.zip"
+          NOTES="docs/release-notes/$TAG.md"
+          { [ -f "$NOTES" ] && cat "$NOTES"; echo; echo "SHA-256 \`KSNetFix-$VER.zip\`: \`$(sha256sum "$ZIP" | cut -d' ' -f1)\`"; } > notes.md
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$ZIP" --clobber
+          else
+            gh release create "$TAG" "$ZIP" --title "KSNetFix $VER" --notes-file notes.md --verify-tag
+          fi

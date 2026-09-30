@@ -91,6 +91,10 @@ repozytorium albo ustaw `STEAMWORKS_SDK` na folder z `public/steam/steam_api.h`.
 ./package.sh         # dist/KSNetFix-<wersja>.zip
 ```
 
+Wydanie: podbij `KSNETFIX_VERSION` w `src/ksnetfix.cpp`, dodaj `docs/release-notes/v<wersja>.md` i wypchnij
+tag `v<wersja>` — workflow `.github/workflows/release.yml` zbuduje paczkę MSVC na Windows
+(Steamworks SDK z crate'a `steamworks-sys`) i opublikuje release z zipem.
+
 ## Serwer dedykowany
 
 Serwer dedykowany RPG (automatyczny host, także VPS) jest rozwijany jako dodatek do KSNetFix w osobnym
