@@ -115,11 +115,11 @@ Rekord gry (`+0x4A64`, liczba `+0x4A68`, 0x34 B): +0x04 GUID, +0x14 nazwa, +0x1C
 | `/error …` | `+0x9C` / `+0xAC` (do rozpisania) |
 | `/getplayerdata "nick" "klucz" <n>` + `n` bajtów | `+0xE0(nick, klucz, dane, n)`; `n=0` = brak danych |
 | `/bin <n>` + `n` bajtów | odczyt binarny (do rozpisania) |
-| `/plays …` | serwer pozwala hostować: klient tworzy GUID, woła `+0xE4(0)` (hostuje sesję DirectPlay „EarthNetSession”) i odsyła `/plays` |
+| `/plays "nazwa" "hasło"` | serwer pozwala hostować: klient woła `+0xE4(0)` (hostuje sesję DirectPlay „EarthNetSession”) i odsyła `/plays "nazwa" "hasło" "<guid sesji>"` |
 | `/playc …` | dołączanie do gry (`+0xE8`, `+0xC8`) — do rozpisania |
-| `/ladder`, `/ladderm`, `/ladderw` + dane | ranking (`0x80A6F0`, `+0xDC`) |
+| `/ladder`, `/ladderm`, `/ladderw` + dane | ranking (`0x80A6F0`, `+0xDC`); sama komenda bez danych = pusty ranking |
 | `/whois …` | informacje o graczu (`+0xF4`) |
-| `/syncstats %u×7` | liczniki (`+0xF8`): gracze/gry/kanały |
+| `/syncstats a b c d e f g` | liczniki (`+0xF8`): gracze zalogowani / wszyscy, gry otwarte / wszystkie, kanały, 2× nieużywane |
 | `/info "tekst"` | `+0xB8` |
 | `/nickok` | `+0xFC` |
 | `/login …` (tekstowy) | tylko tryb 1 (nieużywany) |
@@ -131,11 +131,14 @@ Rekord gry (`+0x4A64`, liczba `+0x4A68`, 0x34 B): +0x04 GUID, +0x14 nazwa, +0x1C
 | `/getplayerdata "nick" "KS_RPG_ChData.1.0"` | zaraz po zalogowaniu (bohater RPG z serwera) |
 | `/setplayerdata "nick" "klucz" "n"` + dane | zapis bohatera |
 | `/join "kanał" ["hasło"]` | zmiana kanału (`+0x44`) |
-| `/send "tekst"` | wiadomość na kanale (`+0x48`) |
+| `/msg "#kanał" "tekst"` | wiadomość na kanale — tak wysyła okno czatu (serwer odpowiada `/send "nick" "tekst"`) |
+| `/msg "nick" "tekst"` | szept (serwer odpowiada `/msgc "nick" "tekst"`) |
+| `/send "tekst"` | wiadomość na kanale (`+0x48`, starsza ścieżka) |
 | `/create "…"` | nowy kanał / konto (`+0x0C`) |
-| `/whois "nick"`, `/update …`, `/characterinfo "…" "%d"` | |
+| `/whois "nick"`, `/update "nick" "" "4294967295" "" "255" "255" ""`, `/characterinfo "…" "%d"` | `/update` po wejściu na ekran główny — bez odpowiedzi |
 | `/ladder`, `/ladderm`, `/ladderw` | ranking |
-| `/plays "…" "…" "…"`, `/playc …`, `/playi …`, `/playg …`, `/play0|v|d …`, `/newhost`, `/newbadhost` | gry: zakładanie, dołączanie, wynik, zmiana hosta |
+| `/plays "<zerowy guid>" "RTS : nazwa" "hasło"` | „Nowa gra RTS/RPG”: prośba o hostowanie; po `/plays` z serwera klient hostuje i rejestruje grę `/plays "nazwa" "hasło" "<guid>"` |
+| `/playc …`, `/playi …`, `/playg …`, `/play0|v|d …`, `/newhost`, `/newbadhost` | gry: zakładanie, dołączanie, wynik, zmiana hosta |
 
 Po zalogowaniu klient sam dodaje siebie do listy (`+0xC8`), wysyła `/getplayerdata` i przechodzi na
 ekran główny EarthNet (ekran `0x0C`).

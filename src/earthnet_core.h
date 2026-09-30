@@ -68,6 +68,9 @@ class Backend {
     virtual void OnSay(Session& s, const std::string& text) = 0;
     virtual void OnWhisper(Session& s, const std::string& to, const std::string& text) = 0;
     virtual void OnLogout(Session& s) = 0;
+    // "New RTS/RPG game": default approves at once; the client then hosts and calls OnGameHosted.
+    virtual void OnHostRequest(Session& s, const std::string& name, const std::string& password);
+    virtual void OnGameHosted(Session& s, const std::string& name, const std::string& guid) { (void)s; (void)name; (void)guid; }
     // Any other client command, for tracing and later features.
     virtual void OnCommand(Session& s, const std::vector<std::string>& words) { (void)s; (void)words; }
 };
@@ -115,6 +118,8 @@ class Session {
     void GameAdded(const std::string& name, uint32_t ipv4, const std::string& guid);
     void GameUpdated(const std::string& name, int players, int maxPlayers, const std::string& level);
     void GameRemoved(const std::string& name);
+    // Counters above the chat: players (logged in / all), games (open / all), channels.
+    void Stats(int players, int allPlayers, int games, int allGames, int channels);
     void Line(const std::string& line); // raw line (without the terminating zero)
 
   private:
@@ -144,9 +149,14 @@ class LocalBackend : public Backend {
   public:
     void OnLogin(Session& s) override;
     void OnJoin(Session& s, const std::string& channel, const std::string& password) override;
+    void OnGameHosted(Session& s, const std::string& name, const std::string& guid) override;
     void OnSay(Session& s, const std::string& text) override;
     void OnWhisper(Session& s, const std::string& to, const std::string& text) override;
     void OnLogout(Session& s) override { (void)s; }
+
+  private:
+    void SendStats(Session& s);
+    std::vector<std::string> channels_, games_;
 };
 
 class MemoryStore : public PlayerStore {

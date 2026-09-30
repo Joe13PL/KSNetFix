@@ -228,11 +228,12 @@ static void TestSession() {
 
     // 3. lines after login
     c.TakeLines();
-    CHECK(c.lines.size() == 2);
-    if (c.lines.size() == 2) {
+    CHECK(c.lines.size() == 3);
+    if (c.lines.size() == 3) {
         auto t = GameTokens(c.lines[0]);
         CHECK(t.size() == 5 && t[0] == "$channel" && t[1] == "KnightShift");
-        t = GameTokens(c.lines[1]);
+        CHECK(c.lines[1] == "/syncstats 1 1 0 0 1 0 0");
+        t = GameTokens(c.lines[2]);
         CHECK(t.size() == 3 && t[0] == "/send" && t[1] == "SteamNet");
     }
     c.lines.clear();
@@ -291,16 +292,68 @@ static void TestSession() {
     CHECK(c.lines.size() == 1 && GameTokens(c.lines[0]).size() == 4 && GameTokens(c.lines[0])[3] == "0");
     c.lines.clear();
 
+    // 7b. chat as the game really sends it (0x8268C0): /msg "#channel" / /msg "nick"
+    std::string m1 = "/msg \"#KnightShift\" \"czesc \"wszystkim\"\"";
+    m1.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)m1.data(), m1.size()));
+    c.TakeLines();
+    CHECK(c.lines.size() == 1);
+    if (!c.lines.empty()) {
+        auto t = GameTokens(c.lines[0]);
+        CHECK(t.size() == 3 && t[0] == "/send" && t[1] == "Joe" && t[2] == "czesc \"wszystkim\"");
+    }
+    c.lines.clear();
+    std::string m2 = "/msg \"Joe\" \"tylko do mnie\"";
+    m2.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)m2.data(), m2.size()));
+    c.TakeLines();
+    CHECK(c.lines.size() == 2 && GameTokens(c.lines[0])[0] == "/msgc" && GameTokens(c.lines[1])[0] == "/msg");
+    c.lines.clear();
+
+    // 7c. new game: request -> approval -> client hosts and registers -> game on the list
+    std::string h1 = "/plays \"00000000-0000-0000-0000-000000000000\" \"RTS : test\" \"\"";
+    h1.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)h1.data(), h1.size()));
+    c.TakeLines();
+    CHECK(c.lines.size() == 1 && c.lines[0] == "/plays \"RTS : test\" \"\"");
+    c.lines.clear();
+    std::string h2 = "/plays \"RTS : test\" \"\" \"04030201-0605-0807-090a-0b0c0d0e0f10\"";
+    h2.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)h2.data(), h2.size()));
+    c.TakeLines();
+    CHECK(c.lines.size() == 2);
+    if (c.lines.size() == 2) {
+        auto t = GameTokens(c.lines[0]);
+        CHECK(t.size() == 6 && t[0] == "$play" && t[1] == "RTS : test" && t[5] == "04030201-0605-0807-090a-0b0c0d0e0f10");
+        CHECK(c.lines[1] == "/syncstats 1 1 1 1 1 0 0");
+    }
+    c.lines.clear();
+
+    // 7d. ranking and profile update
+    std::string l1 = "/ladderm";
+    l1.push_back('\0');
+    l1 += "/update \"Joe\" \"\" \"4294967295\" \"\" \"255\" \"255\" \"\"";
+    l1.push_back('\0');
+    CHECK(s.OnData((const uint8_t*)l1.data(), l1.size()));
+    c.TakeLines();
+    CHECK(c.lines.size() == 1 && c.lines[0] == "/ladderm");
+    c.lines.clear();
+
     // 8. channel change
     std::string j = "/join \"Polanie\" \"\"";
     j.push_back('\0');
     CHECK(s.OnData((const uint8_t*)j.data(), j.size()));
     c.TakeLines();
-    CHECK(c.lines.size() == 3);
-    if (c.lines.size() == 3) {
+    CHECK(c.lines.size() == 4);
+    if (c.lines.size() == 4) {
         CHECK(GameTokens(c.lines[1])[0] == "/join" && GameTokens(c.lines[1])[1] == "Polanie");
         CHECK(GameTokens(c.lines[2])[0] == "$user" && GameTokens(c.lines[2])[1] == "Joe");
+        CHECK(c.lines[3] == "/syncstats 1 1 1 1 2 0 0");
     }
+    c.lines.clear();
+    CHECK(s.OnData((const uint8_t*)j.data(), j.size())); // again: no duplicate $channel
+    c.TakeLines();
+    CHECK(c.lines.size() == 3 && GameTokens(c.lines[0])[0] == "/join");
     CHECK(s.Channel() == "Polanie");
 
     for (auto& l : log) printf("  log: %s\n", l.c_str());

@@ -196,8 +196,11 @@ int main() {
     CHECK(line.rfind("$channel \"KnightShift\"", 0) == 0);
     CHECK(RecvLine(s, in, line));
     printf("  line: %s\n", line.c_str());
+    CHECK(line.rfind("/syncstats ", 0) == 0);
+    CHECK(RecvLine(s, in, line));
+    printf("  line: %s\n", line.c_str());
 
-    std::string say = "/send \"czesc\"";
+    std::string say = "/msg \"#KnightShift\" \"czesc\""; // chat as the game sends it
     say.push_back('\0');
     send(s, say.data(), (int)say.size(), 0);
     CHECK(RecvLine(s, in, line));

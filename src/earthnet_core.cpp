@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <algorithm>
+
 namespace en {
 
 // ---------------------------------------------------------------------------
@@ -465,8 +467,33 @@ void Session::OnClientLine(const std::string& line) {
             }
         }
         backend_.OnSay(*this, text);
+    } else if (cmd == "/msg") {
+        // Chat input (0x8268C0): /msg "#channel" "text" for the channel, /msg "nick" "text" to whisper.
+        const std::string to = arg(1);
+        size_t q = line.find('"', line.find('"', line.find('"') + 1) + 1); // opening quote of the text
+        size_t e = line.rfind('"');
+        std::string text = q != std::string::npos && e > q ? line.substr(q + 1, e - q - 1) : arg(2);
+        if (!to.empty() && to[0] == '#')
+            backend_.OnSay(*this, text);
+        else
+            backend_.OnWhisper(*this, to, text);
     } else if (cmd == "/join") {
         backend_.OnJoin(*this, arg(1), arg(2));
+    } else if (cmd == "/plays") {
+        // /plays "<zero guid>" "RTS : name" "password" asks to host (0x80B580); after our
+        // /plays "name" "password" the client hosts (+0xE4) and answers /plays "name" "password" "guid".
+        bool request = arg(1).size() == 36 && arg(1)[8] == '-' && arg(1)[13] == '-';
+        if (request) {
+            Log("host request \"%s\"", arg(2).c_str());
+            backend_.OnHostRequest(*this, arg(2), arg(3));
+        } else {
+            Log("game hosted \"%s\" %s", arg(1).c_str(), arg(3).c_str());
+            backend_.OnGameHosted(*this, arg(1), arg(3));
+        }
+    } else if (cmd == "/ladder" || cmd == "/ladderm" || cmd == "/ladderw") {
+        Line(cmd); // empty ranking (0x80A6F0 with no rows)
+    } else if (cmd == "/update") {
+        // profile data after login (country, age, ...): nothing to keep yet
     } else if (cmd == "/getplayerdata") {
         std::vector<uint8_t> data;
         bool found = store_.Load(arg(1), arg(2), data);
@@ -534,21 +561,46 @@ void Session::GameUpdated(const std::string& name, int players, int maxPlayers, 
     Line(l + buf);
 }
 void Session::GameRemoved(const std::string& name) { Line("&play " + Quote(name)); }
+void Session::Stats(int players, int allPlayers, int games, int allGames, int channels) {
+    char buf[96];
+    snprintf(buf, sizeof(buf), "/syncstats %d %d %d %d %d 0 0", players, allPlayers, games, allGames, channels);
+    Line(buf);
+}
+
+void Backend::OnHostRequest(Session& s, const std::string& name, const std::string& password) {
+    s.Line("/plays " + Quote(name) + " " + Quote(password));
+}
 
 // ---------------------------------------------------------------------------
 // Offline backend
 // ---------------------------------------------------------------------------
+void LocalBackend::SendStats(Session& s) {
+    s.Stats(1, 1, (int)games_.size(), (int)games_.size(), (int)channels_.size());
+}
+
 void LocalBackend::OnLogin(Session& s) {
+    channels_.push_back(s.Channel());
     s.ChannelAdded(s.Channel(), "SteamNet");
+    SendStats(s);
     s.ChannelMessage("SteamNet", "Tryb offline: kanaly i gry przez Steam jeszcze w budowie.");
 }
 
 void LocalBackend::OnJoin(Session& s, const std::string& channel, const std::string& password) {
     (void)password;
     if (channel.empty()) return;
-    s.ChannelAdded(channel, "");
+    if (std::find(channels_.begin(), channels_.end(), channel) == channels_.end()) {
+        channels_.push_back(channel);
+        s.ChannelAdded(channel, "");
+    }
     s.EnteredChannel(channel, "");
     s.UserEntered(s.Nick());
+    SendStats(s);
+}
+
+void LocalBackend::OnGameHosted(Session& s, const std::string& name, const std::string& guid) {
+    if (std::find(games_.begin(), games_.end(), name) == games_.end()) games_.push_back(name);
+    s.GameAdded(name, 0, guid);
+    SendStats(s);
 }
 
 void LocalBackend::OnSay(Session& s, const std::string& text) { s.ChannelMessage(s.Nick(), text); }
