@@ -149,6 +149,7 @@ struct FakeRanking : en::RankingService {
         e.details = details;
         board.push_back(e);
     }
+    void Update(const std::string&, std::function<void(int&, std::vector<int32_t>&)>) override {}
 } g_ranking;
 
 // Stands in for Steam lobbies: events are pushed from this (test) thread, like the Steam thread.

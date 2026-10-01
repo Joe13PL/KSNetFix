@@ -73,6 +73,9 @@ struct LadderRow {
 };
 enum LadderPeriod { LADDER_ALL, LADDER_MONTH, LADDER_WEEK };
 
+// What the client reports when it comes back from a match (0x80D720, from 0x82CEF0).
+enum GameResult { RESULT_WIN, RESULT_LOSS, RESULT_NONE };
+
 class Session;
 
 class Backend {
@@ -87,6 +90,8 @@ class Backend {
     // "New RTS/RPG game": default approves at once; the client then hosts and calls OnGameHosted.
     virtual void OnHostRequest(Session& s, const std::string& name, const std::string& password);
     virtual void OnGameHosted(Session& s, const std::string& name, const std::string& guid) { (void)s; (void)name; (void)guid; }
+    // /playv (won), /playd (lost) or /play0 (not rated, or left before the end).
+    virtual void OnGameResult(Session& s, GameResult r) { (void)s; (void)r; }
     // Join a listed game (/playc "guid" "name" "password"). The default: no such game.
     virtual void OnJoinGame(Session& s, const std::string& guid, const std::string& name, const std::string& password);
     // Ranking tabs; at most 10 rows are shown (the client has room for no more).
@@ -114,6 +119,7 @@ struct SessionConfig {
     std::string accountKey;         // stable account id for saved data, e.g. "steam_7656..." (empty: the nick)
     std::string previousLogin;      // the game's own login before SteamNet replaced it (old saved data)
     std::function<void()> beforeHello; // runs right before the hello reply (the client logs in on it)
+    std::function<bool()> matchRunning; // a SteamNet match is being played (the game's 0xF62588)
 };
 
 class Session {
@@ -127,6 +133,7 @@ class Session {
     bool OnData(const uint8_t* p, size_t n);
     void OnClosed();
     void Poll() { if (LoggedIn()) backend_.Poll(*this); } // call often from the session's thread
+    bool MatchRunning() const { return cfg_.matchRunning && cfg_.matchRunning(); }
 
     const std::string& Nick() const { return nick_; }      // as the game logged in
     const std::string& PublicName() const { return cfg_.accountNick.empty() ? nick_ : cfg_.accountNick; }
@@ -211,6 +218,9 @@ class RankingService {
     // entry is rewritten (same score) when refresh changes its details. refresh may run on any thread.
     virtual void Join(const std::string& board, int score, const std::vector<int32_t>& details,
                       std::function<bool(std::vector<int32_t>&)> refresh) = 0;
+    // Changes the player's own entry: apply gets its score and details (0 and empty when there is
+    // none yet) and changes them; the board is made when missing. Uploads run one after another.
+    virtual void Update(const std::string& board, std::function<void(int& score, std::vector<int32_t>& details)> apply) = 0;
 };
 
 // Board names: "SteamNet" (all time), "SteamNet 2026-09" (month), "SteamNet 2026-W40" (ISO week).
@@ -222,18 +232,29 @@ LadderRow RankingRow(const BoardEntry& e);
 bool RankingSetNick(std::vector<int32_t>& details, const std::string& nick);
 
 // LocalBackend plus the ranking from a RankingService.
+// Points: win +3, loss 0, disconnect -1. A match counts as a disconnect from the moment it starts
+// and becomes a win or a loss when the result comes, so quitting the game mid-match keeps the -1.
+struct ResultChange {
+    int wins = 0, losses = 0, disconnects = 0, points = 0;
+};
+void ApplyResult(int& score, std::vector<int32_t>& details, const ResultChange& c, const std::string& nick, int64_t now);
+
 class RankedBackend : public LocalBackend {
   public:
     RankedBackend(RankingService& r, std::function<int64_t()> now) : ranking_(r), now_(std::move(now)) {}
     void OnLogin(Session& s) override;
     std::vector<LadderRow> OnLadder(Session& s, LadderPeriod period) override;
+    void OnGameResult(Session& s, GameResult r) override;
+    void Poll(Session& s) override;
 
   protected:
     void JoinRanking(Session& s); // the player shows up on the all-time board
+    void Record(Session& s, const ResultChange& c); // all-time, month and week boards
 
   private:
     RankingService& ranking_;
     std::function<int64_t()> now_;
+    bool matchWasRunning_ = false, provisional_ = false; // a disconnect is on the boards for this match
 };
 
 class MemoryStore : public PlayerStore {
@@ -297,6 +318,7 @@ class NoRanking : public RankingService {
   public:
     bool Top(const std::string&, bool, int, std::vector<BoardEntry>& out) override { out.clear(); return true; }
     void Join(const std::string&, int, const std::vector<int32_t>&, std::function<bool(std::vector<int32_t>&)>) override {}
+    void Update(const std::string&, std::function<void(int&, std::vector<int32_t>&)>) override {}
 };
 
 class OnlineBackend : public RankedBackend {

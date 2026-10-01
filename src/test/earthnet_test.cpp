@@ -411,6 +411,18 @@ struct FakeRanking : en::RankingService {
         e.details = details;
         boards[board].push_back(e);
     }
+    void Update(const std::string& board, std::function<void(int&, std::vector<int32_t>&)> apply) override {
+        calls.push_back("update " + board);
+        for (auto& old : boards[board])
+            if (old.steamName == "Wojtek") {
+                apply(old.score, old.details);
+                return;
+            }
+        en::BoardEntry e;
+        e.steamName = "Wojtek";
+        apply(e.score, e.details);
+        boards[board].push_back(e);
+    }
 };
 
 static void TestSteamNames() {
@@ -758,6 +770,96 @@ static void TestOnline() {
     CHECK(std::count(lobbies.calls.begin(), lobbies.calls.end(), "stop") == 1);
 }
 
+// Match results: a started match counts as a disconnect until its result comes.
+static void TestResults() {
+    std::vector<int32_t> d;
+    int score = 7;
+    en::ResultChange win;
+    win.wins = 1;
+    win.points = 3;
+    en::ApplyResult(score, d, win, "Wojtek", 1790812800); // no entry yet: starts from nothing
+    CHECK(score == 3 && d.size() == 9 && d[1] == 1 && d[2] == 0 && d[4] == 1790812800);
+    CHECK(en::RankingRow(en::BoardEntry{"x", score, d}).nick == "Wojtek");
+
+    FakeClient c;
+    en::SessionConfig cfg;
+    cfg.accountNick = "Wojtek";
+    bool match = false;
+    cfg.matchRunning = [&] { return match; };
+    FakeRanking ranking;
+    int64_t now = 1790812800; // Thursday 2026-10-01
+    en::RankedBackend backend(ranking, [&] { return now; });
+    en::MemoryStore store;
+    en::Session s(cfg, backend, store, [&](const uint8_t* p, size_t n) { c.in.insert(c.in.end(), p, p + n); }, nullptr);
+    en::Writer info;
+    info.raw("x", 1);
+    auto pkt = GamePacket(info);
+    s.OnData(pkt.data(), pkt.size());
+    en::Writer login;
+    login.str("Wojtek");
+    login.str("");
+    login.u32(0);
+    login.u32(0);
+    login.u32(0);
+    uint8_t zero[16] = {0};
+    login.raw(zero, 16);
+    pkt = GamePacket(login);
+    CHECK(s.OnData(pkt.data(), pkt.size()) && s.LoggedIn());
+    auto entry = [&](const std::string& board) {
+        for (auto& e : ranking.boards[board])
+            if (e.steamName == "Wojtek") return en::RankingRow(e);
+        return en::LadderRow();
+    };
+    auto send = [&](const std::string& line) {
+        std::string l = line;
+        l.push_back('\0');
+        CHECK(s.OnData((const uint8_t*)l.data(), l.size()));
+    };
+
+    // match 1: starts (a disconnect for now), then won
+    s.Poll();
+    CHECK(entry("SteamNet").disconnects == 0);
+    match = true;
+    s.Poll();
+    s.Poll(); // still the same match: counted once
+    en::LadderRow r = entry("SteamNet");
+    CHECK(r.disconnects == 1 && r.points == -1);
+    CHECK(entry("SteamNet 2026-10").disconnects == 1 && entry("SteamNet 2026-W40").disconnects == 1);
+    send("/playv \"g\" \"RTS : mapa\" \"\" \"g\"");
+    match = false;
+    s.Poll();
+    r = entry("SteamNet");
+    CHECK(r.wins == 1 && r.losses == 0 && r.disconnects == 0 && r.points == 3);
+    CHECK(entry("SteamNet 2026-W40").points == 3);
+
+    // match 2: lost
+    match = true;
+    s.Poll();
+    send("/playd \"g\" \"RTS : mapa\" \"\" \"g\"");
+    match = false;
+    s.Poll();
+    r = entry("SteamNet");
+    CHECK(r.wins == 1 && r.losses == 1 && r.disconnects == 0 && r.points == 3);
+
+    // match 3: not rated
+    match = true;
+    s.Poll();
+    send("/play0 \"g\" \"RTS : mapa\" \"\" \"g\"");
+    match = false;
+    s.Poll();
+    r = entry("SteamNet");
+    CHECK(r.wins == 1 && r.losses == 1 && r.disconnects == 0 && r.points == 3);
+
+    // match 4: the game is closed mid-match - the disconnect stays
+    match = true;
+    s.Poll();
+    s.OnClosed();
+    r = entry("SteamNet");
+    CHECK(r.disconnects == 1 && r.points == 2);
+    // two uploads for a match with a result, one for an unfinished one
+    CHECK(std::count(ranking.calls.begin(), ranking.calls.end(), "update SteamNet") == 7);
+}
+
 int main() {
     TestZlib();
     TestSignature();
@@ -767,6 +869,7 @@ int main() {
     TestRanking();
     TestSteamAccount();
     TestOnline();
+    TestResults();
     printf(g_fail ? "%d FAILED\n" : "all tests passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

@@ -26,6 +26,7 @@ struct SteamNetGameAddrs {
     uint32_t lookupBuffer = 0; // offset of the host lookup buffer in the client object
     uint32_t memAlloc = 0;     // the game's allocator, void* __cdecl(size_t)
     uint32_t loginGlobal = 0;  // the saved login (ANSI string object; profile, "X entered the channel")
+    uint32_t matchFlag = 0;    // non-zero while an EarthNet match is played (set by 0x82E890)
 };
 
 // Renames the menu entry and hooks the game's winsock lookups. Call from DllMain.

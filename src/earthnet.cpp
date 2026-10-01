@@ -200,6 +200,7 @@ DWORD WINAPI ConnectionThread(void* param) {
     cfg.previousLogin = g_previousLogin;
     LeaveCriticalSection(&g_cs);
     cfg.beforeHello = [] { InstallSteamLogin(); };
+    if (A.matchFlag) cfg.matchRunning = [] { return G<volatile uint32_t>(A.matchFlag) != 0; };
     std::unique_ptr<en::Backend> backendPtr;
     static en::NoRanking noRanking;
     en::RankingService& ranking = g_ranking && S.ranking ? *g_ranking : noRanking;

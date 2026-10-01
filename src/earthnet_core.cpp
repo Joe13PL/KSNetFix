@@ -498,6 +498,10 @@ void Session::OnClientLine(const std::string& line) {
             Log("game hosted \"%s\" %s", arg(1).c_str(), arg(3).c_str());
             backend_.OnGameHosted(*this, arg(1), arg(3));
         }
+    } else if (cmd == "/playv" || cmd == "/playd" || cmd == "/play0") {
+        // /playX "guid" "game" "password" "guid" when the client is back from a match (0x80D720)
+        Log("match result %s \"%s\"", cmd.c_str() + 5, arg(2).c_str());
+        backend_.OnGameResult(*this, cmd == "/playv" ? RESULT_WIN : cmd == "/playd" ? RESULT_LOSS : RESULT_NONE);
     } else if (cmd == "/playc") {
         // /playc "guid" "name" "password" joins a listed game (0x80BAD0)
         Log("join request \"%s\"", arg(2).c_str());
@@ -776,6 +780,57 @@ void RankedBackend::JoinRanking(Session& s) {
                   [nick](std::vector<int32_t>& d) { return RankingSetNick(d, nick); });
 }
 
+void ApplyResult(int& score, std::vector<int32_t>& d, const ResultChange& c, const std::string& nick, int64_t now) {
+    if (d.size() < 9 || d[0] != 1) { // no entry yet (or another layout): start from nothing
+        d = RankingDetails(nick, 0, 0, 0, 0);
+        score = 0;
+    }
+    d[1] += c.wins;
+    d[2] += c.losses;
+    d[3] += c.disconnects;
+    d[4] = (int32_t)(uint32_t)now;
+    RankingSetNick(d, nick);
+    score += c.points; // may go below 0 for a while; the ladder shows 0 then
+}
+
+void RankedBackend::Record(Session& s, const ResultChange& c) {
+    std::string nick = s.PublicName();
+    int64_t now = now_();
+    for (LadderPeriod p : {LADDER_ALL, LADDER_MONTH, LADDER_WEEK})
+        ranking_.Update(RankingBoard(p, now), [c, nick, now](int& score, std::vector<int32_t>& d) { ApplyResult(score, d, c, nick, now); });
+}
+
+void RankedBackend::Poll(Session& s) {
+    bool running = s.MatchRunning();
+    if (running && !matchWasRunning_ && !provisional_) {
+        // a match started: it counts as a disconnect until the result comes
+        ResultChange c;
+        c.disconnects = 1;
+        c.points = -1;
+        Record(s, c);
+        provisional_ = true;
+    }
+    matchWasRunning_ = running;
+}
+
+void RankedBackend::OnGameResult(Session& s, GameResult r) {
+    ResultChange c;
+    if (provisional_) { // take the disconnect back
+        c.disconnects = -1;
+        c.points = 1;
+        provisional_ = false;
+    }
+    if (r == RESULT_WIN) {
+        c.wins = 1;
+        c.points += 3;
+        s.ChannelMessage("SteamNet", "Wygrana zapisana w rankingu (+3 pkt).");
+    } else if (r == RESULT_LOSS) {
+        c.losses = 1;
+        s.ChannelMessage("SteamNet", "Porazka zapisana w rankingu.");
+    }
+    if (c.wins || c.losses || c.disconnects) Record(s, c);
+}
+
 std::vector<LadderRow> RankedBackend::OnLadder(Session& s, LadderPeriod period) {
     (void)s;
     std::vector<BoardEntry> top;
@@ -898,6 +953,7 @@ void OnlineBackend::OnJoinGame(Session& s, const std::string& guid, const std::s
 }
 
 void OnlineBackend::Poll(Session& s) {
+    RankedBackend::Poll(s);
     if (!started_) return;
     for (const LobbyEvent& e : events_->Take()) Apply(s, e);
     if (now_() - lastRefresh_ >= 60) { // the channel list: new channels, empty ones gone

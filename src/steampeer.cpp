@@ -1878,8 +1878,15 @@ std::string Ansi(const char* utf8) {
     return a;
 }
 
+struct BoardOp;
+std::deque<BoardOp*> g_uploads; // Steam allows one score upload at a time: they wait here
+BoardOp* g_uploading = nullptr;
+void QueueUpload(BoardOp* op);
+void UploadDone(BoardOp* op);
+
 struct BoardOp {
     bool join = false, create = false;
+    std::function<void(int&, std::vector<int32_t>&)> update; // change the player's own entry
     std::string board;
     int count = 10, score = 0;
     std::vector<int32> details;
@@ -1904,7 +1911,10 @@ struct BoardOp {
     void Finish(bool success) {
         ok = success;
         SetEvent(done);
-        g_svc->Post([this] { Release(); }); // not from inside the call result that is running now
+        g_svc->Post([this] { // not from inside the call result that is running now
+            UploadDone(this);
+            Release();
+        });
     }
     void Start() {
         ISteamUserStats* us = SteamUserStats();
@@ -1922,14 +1932,14 @@ struct BoardOp {
         if (io || !r->m_bLeaderboardFound) {
             // FindLeaderboard of a board nobody wrote to yet: an empty ranking, not an error
             Log("steam: ranking \"%s\": %s", board.c_str(), io ? "Steam I/O failure" : create ? "cannot create the leaderboard" : "no leaderboard yet");
-            return Finish(!io && !create && !join);
+            return Finish(!io && !create && !join && !update);
         }
         lb = r->m_hSteamLeaderboard;
         ISteamUserStats* us = SteamUserStats();
         Log("steam: ranking \"%s\": leaderboard %llu, %d entries", board.c_str(), (unsigned long long)lb,
             us->GetLeaderboardEntryCount(lb));
         SteamAPICall_t c;
-        if (join) {
+        if (join || update) {
             CSteamID me = SteamUser()->GetSteamID();
             c = us->DownloadLeaderboardEntriesForUsers(lb, &me, 1);
         } else {
@@ -1943,6 +1953,24 @@ struct BoardOp {
             return Finish(false);
         }
         ISteamUserStats* us = SteamUserStats();
+        if (update) {
+            int score = 0;
+            std::vector<int32_t> d;
+            LeaderboardEntry_t e;
+            int32 buf[k_cLeaderboardDetailsMax];
+            if (r->m_cEntryCount > 0 &&
+                us->GetDownloadedLeaderboardEntry(r->m_hSteamLeaderboardEntries, 0, &e, buf, k_cLeaderboardDetailsMax)) {
+                score = e.m_nScore;
+                d.assign(buf, buf + (e.m_cDetails < k_cLeaderboardDetailsMax ? e.m_cDetails : k_cLeaderboardDetailsMax));
+            }
+            update(score, d);
+            this->score = score;
+            details.assign(d.begin(), d.end());
+            SteamAPICall_t c = us->UploadLeaderboardScore(lb, k_ELeaderboardUploadScoreMethodForceUpdate, score,
+                                                          details.data(), (int)details.size());
+            crUp.Set(c, this, &BoardOp::OnUploaded);
+            return;
+        }
         if (join) {
             if (r->m_cEntryCount > 0) {
                 LeaderboardEntry_t e;
@@ -1993,8 +2021,30 @@ bool PostBoardOp(BoardOp* op) {
         return false;
     }
     InterlockedIncrement(&op->refs);
-    g_svc->Post([op] { op->Start(); });
+    if (op->join || op->update)
+        g_svc->Post([op] { QueueUpload(op); });
+    else
+        g_svc->Post([op] { op->Start(); });
     return true;
+}
+
+void QueueUpload(BoardOp* op) {
+    if (g_uploading) {
+        g_uploads.push_back(op);
+        return;
+    }
+    g_uploading = op;
+    op->Start();
+}
+
+void UploadDone(BoardOp* op) {
+    if (op != g_uploading) return;
+    g_uploading = nullptr;
+    if (g_uploads.empty()) return;
+    BoardOp* next = g_uploads.front();
+    g_uploads.pop_front();
+    g_uploading = next;
+    next->Start();
 }
 
 class SteamRanking : public en::RankingService {
@@ -2024,6 +2074,14 @@ class SteamRanking : public en::RankingService {
         op->score = score;
         op->details.assign(details.begin(), details.end());
         op->refresh = std::move(refresh);
+        PostBoardOp(op); // fire and forget
+        op->Release();
+    }
+    void Update(const std::string& board, std::function<void(int&, std::vector<int32_t>&)> apply) override {
+        BoardOp* op = new BoardOp;
+        op->create = true;
+        op->board = board;
+        op->update = std::move(apply);
         PostBoardOp(op); // fire and forget
         op->Release();
     }

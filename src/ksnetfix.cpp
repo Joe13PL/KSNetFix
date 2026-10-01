@@ -1202,7 +1202,7 @@ static void Install() {
         SteamNetGameAddrs g = {A == &kEx1 ? 0x0092C8D4u : 0x0093605Cu, A->installIdHi - 4};
         if (A == &kEx1) // Steam login: ex1 addresses only
             g.client = 0x00F625B0, g.clientVtable = 0x008FABA0, g.lookupBuffer = 0x4AB0, g.memAlloc = 0x007971D0,
-            g.loginGlobal = 0x00A58F08;
+            g.loginGlobal = 0x00A58F08, g.matchFlag = 0x00F62588;
         Log("steamnet (EarthNet -> local server%s): %s", A == &kEx1 ? "" : ", untested on this engine",
             SteamNet_Install(cfg.steamNet, g) ? "ok" : "FAILED");
         bool ranking = cfg.steamNet.ranking && cfg.steam.enabled && !cfg.steam.gameServer;

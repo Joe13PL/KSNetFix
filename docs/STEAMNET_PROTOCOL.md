@@ -206,6 +206,21 @@ kilku graczy dostaje ` #2`. Wyjście gracza z kanału usuwa jego grę (`&play`).
 `+0xE8(2)` „złe hasło”. Transport Steam (`ParseSteamTarget`) zamienia adres `10.83.x.y` na lobby gry i łączy
 jak z `ks-lobby:<id>`.
 
+### Wyniki meczów
+
+Po powrocie z meczu `0x82CEF0` ustawia wynik (`+0x2BB0` = `DAT_00f6258c`) i woła `+0x64` (`0x80D720`):
+`/playv` (wynik 1), `/playd` (0) albo `/play0` (2 lub -1), każde z `"<guid +0x505C>" "<gra +0x4A40>"
+"<hasło +0x4A44>" "<guid +0x4A30>"`. Wynik ustawia koniec gry: porażka `0x62CE30` → 0, zwycięstwo `0x62CFA0` → 1
+(gdy mecz „liczony”: flaga `+0x14 & 4` ustawień gracza i był przeciwnik), inaczej 2; `DAT_00f62588 == 0` (mecz nie
+ruszył) → -1. Start meczu sieciowego (`0x82E890`, z `0x848080`) ustawia `DAT_00f62588` — serwer nie dostaje o nim
+komunikatu.
+
+SteamNet: wygrana +3 pkt, porażka 0, rozłączenie -1. Serwer co 100 ms czyta `0xF62588`: gdy mecz rusza, od razu
+zapisuje rozłączenie (-1, rozł. +1), które wynik `/playv` / `/playd` zamienia na wygraną / porażkę, a `/play0`
+cofa — kto zamknie grę w trakcie meczu, zostaje z rozłączeniem. Każdy gracz zapisuje swój wpis (Steam nie pozwala
+pisać cudzych) na trzech tablicach: ogólnej, miesięcznej i tygodniowej; wysyłki idą po kolei (Steam: jedna naraz,
+10 na 10 minut).
+
 ### Komendy klienta
 
 | linia | kiedy |
