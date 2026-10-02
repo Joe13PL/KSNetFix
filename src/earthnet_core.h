@@ -358,6 +358,7 @@ class OnlineBackend : public RankedBackend {
     std::vector<std::string> channels_, games_;
     std::vector<std::string> pendingSay_; // typed before the channel lobby answered
     int64_t lastRefresh_ = 0;
+    int64_t failedAt_ = 0; // entering the channel failed: try again a little later
 };
 
 } // namespace en

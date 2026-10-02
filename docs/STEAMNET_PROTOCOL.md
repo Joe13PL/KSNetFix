@@ -190,6 +190,10 @@ gracz”; nazwy o tej samej treści dostają `#2`, `#3`), wyjście → `&user`. 
 Messages, kanał 8, `"W" + tekst` → `/msg 0 "od" 0 "tekst"`; transport przyjmuje sesję od członków kanału. Lista
 kanałów: wyszukiwanie `ksnet=chan1` co 60 s → `$channel` / `&channel`. `/syncstats a b c d e f g` = wszyscy
 gracze, zalogowani, kanały, gry w toku, gry otwarte (`0x8239A0`: „gracze b/a, gry e/(d+e), kanały c”).
+Steam prowadzi **jedno wyszukiwanie lobby naraz** i anuluje starsze, gdy rusza nowe — wyszukiwanie kanału i lista
+kanałów czekają więc na siebie (2.6.0 gubiło przez to wejście na kanał przy logowaniu); wyszukiwanie bez odpowiedzi
+(np. anulowane przez transport) i wejście bez odpowiedzi są ponawiane. Dwa lobby jednego kanału (dwie osoby naraz):
+8 s po założeniu lobby SteamNet szuka ponownie i przechodzi do liczniejszego (przy remisie: niższy numer).
 Kod: `OnlineBackend` (`earthnet_core.cpp`), `SteamLobbies` (`steampeer.cpp`); zdarzenia z wątku Steam idą przez
 `LobbyEvents` do wątku połączenia (pętla `select` co 100 ms).
 

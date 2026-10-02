@@ -956,6 +956,10 @@ void OnlineBackend::Poll(Session& s) {
     RankedBackend::Poll(s);
     if (!started_) return;
     for (const LobbyEvent& e : events_->Take()) Apply(s, e);
+    if (failedAt_ && !entered_ && now_() - failedAt_ >= 15) {
+        failedAt_ = 0;
+        lobbies_.Enter(channel_);
+    }
     if (now_() - lastRefresh_ >= 60) { // the channel list: new channels, empty ones gone
         lastRefresh_ = now_();
         lobbies_.RefreshChannels();
@@ -986,8 +990,21 @@ void OnlineBackend::Apply(Session& s, const LobbyEvent& e) {
     case LobbyEvent::ENTERED:
         if (e.channel != channel_) return; // an older request
         entered_ = true;
-        members_.clear();
-        for (const LobbyMember& m : e.members) AddMember(s, m);
+        failedAt_ = 0;
+        // again in the same channel (moved to the channel's other lobby): only the changes
+        for (auto it = members_.begin(); it != members_.end();) {
+            bool still = false;
+            for (const LobbyMember& m : e.members) still |= m.id == it->first;
+            if (still) {
+                ++it;
+                continue;
+            }
+            RemoveGames(s, it->first);
+            s.UserLeft(it->second);
+            it = members_.erase(it);
+        }
+        for (const LobbyMember& m : e.members)
+            if (!members_.count(m.id)) AddMember(s, m);
         for (const std::string& t : pendingSay_) lobbies_.Say(t);
         pendingSay_.clear();
         s.ChannelMessage("SteamNet", e.members.empty() ? "Kanal " + channel_ + ": nikogo wiecej tu nie ma."
@@ -996,7 +1013,8 @@ void OnlineBackend::Apply(Session& s, const LobbyEvent& e) {
         break;
     case LobbyEvent::ENTER_FAILED:
         if (e.channel != channel_) return;
-        s.ChannelMessage("SteamNet", "Nie mozna polaczyc z kanalem " + e.channel + " przez Steam.");
+        s.ChannelMessage("SteamNet", "Nie mozna polaczyc z kanalem " + e.channel + " przez Steam - ponawiam.");
+        failedAt_ = now_();
         break;
     case LobbyEvent::JOINED:
         if (!entered_ || members_.count(e.member.id)) return;

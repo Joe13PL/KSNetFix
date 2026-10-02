@@ -1,4 +1,4 @@
-﻿KSNetFix 2.6.0 - poprawki multiplayer dla KnightShift / Polanie II
+﻿KSNetFix 2.6.1 - poprawki multiplayer dla KnightShift / Polanie II
 =================================================================
 
 Dla wersji Steam gry (1.3). Poprawka nie zmienia plików gry - dokłada
@@ -85,7 +85,7 @@ Ważne:
   w KnightShift. Połączenia idą przez serwery pośredniczące Valve (SDR).
 - Paczka 2.0 używała AppId=480 (Spacewar), od 2.1 jest 254060. Gracze
   z wersją 2.0 i nowszą nie zobaczą swoich sesji - niech wszyscy
-  zainstalują najnowszą. Wersje 2.1-2.6.0 grają ze sobą bez problemu.
+  zainstalują najnowszą. Wersje 2.1-2.6.1 grają ze sobą bez problemu.
 - Gdy host opuści grę, sesja się kończy.
 - Dwóch gier na tym samym komputerze i tym samym koncie Steam nie da się
   połączyć przez Steam (patrz niżej: gra przez LAN).

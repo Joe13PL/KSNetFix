@@ -634,6 +634,19 @@ static void TestOnline() {
     c.TakeLines();
     c.lines.clear();
 
+    // Steam fails the first try: the server tries again a little later
+    en::LobbyEvent failed;
+    failed.kind = en::LobbyEvent::ENTER_FAILED;
+    failed.channel = "KnightShift";
+    lobbies.events->Push(failed);
+    s.Poll();
+    size_t enters = std::count(lobbies.calls.begin(), lobbies.calls.end(), "enter KnightShift");
+    now += 16;
+    s.Poll();
+    CHECK(std::count(lobbies.calls.begin(), lobbies.calls.end(), "enter KnightShift") == (long)enters + 1);
+    c.TakeLines();
+    c.lines.clear();
+
     // the lobby answers: two others in the channel, one with the same Steam name as ours... not a
     // problem for the game; two others with the same name get told apart
     en::LobbyEvent entered;
@@ -648,6 +661,21 @@ static void TestOnline() {
     CHECK(has("$user \"Bolek#2\" 0 \"\" \"00000000-0000-0000-0000-000000000000\""));
     CHECK(has("/syncstats 4 4 1 0 0 0 0"));
     CHECK(std::find(lobbies.calls.begin(), lobbies.calls.end(), "say pierwsza") != lobbies.calls.end());
+    c.lines.clear();
+
+    // moved to the channel's other lobby: Bolek#2 is gone, Ania stays (listed once)
+    en::LobbyEvent moved = entered;
+    moved.members = {{11, "Ania"}, {12, "Bolek"}};
+    lobbies.events->Push(moved);
+    s.Poll();
+    c.TakeLines();
+    CHECK(has("&user \"Bolek#2\" \"\""));
+    CHECK(!has("$user \"Ania\" 0 \"\" \"00000000-0000-0000-0000-000000000000\""));
+    c.lines.clear();
+    lobbies.events->Push(entered); // and back
+    s.Poll();
+    c.TakeLines();
+    CHECK(has("$user \"Bolek#2\" 0 \"\" \"00000000-0000-0000-0000-000000000000\""));
     c.lines.clear();
 
     // chat both ways, whispers by name

@@ -257,9 +257,16 @@ uint64_t VirtualLobby(const std::wstring& h) {
     wchar_t end;
     if (swscanf(h.c_str(), L"%u.%u.%u.%u%lc", &b[0], &b[1], &b[2], &b[3], &end) != 4) return 0;
     if (b[0] > 255 || b[1] > 255 || b[2] > 255 || b[3] > 255) return 0;
-    Lock l(&g_vaddrCs);
-    auto it = g_vaddrLobby.find(b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24);
-    return it == g_vaddrLobby.end() ? 0 : it->second;
+    uint64_t lobby = 0;
+    {
+        Lock l(&g_vaddrCs);
+        auto it = g_vaddrLobby.find(b[0] | b[1] << 8 | b[2] << 16 | b[3] << 24);
+        if (it != g_vaddrLobby.end()) lobby = it->second;
+    }
+    if (b[0] == 10 && b[1] == 83)
+        Log("steam: SteamNet game address %u.%u.%u.%u -> %s %llu", b[0], b[1], b[2], b[3], lobby ? "lobby" : "unknown",
+            (unsigned long long)lobby);
+    return lobby;
 }
 
 // "ks-lobby:<id>", "steam:<id>", a bare 17-digit Steam/lobby id typed as IP, or a SteamNet game address.
@@ -1014,7 +1021,11 @@ class SteamPeer : public IDirectPlay8Peer_ {
         enumApp = app ? app->guidApplication : GUID{};
         enumTarget = target;
         enumLobby = CSteamID(target).IsLobby() ? target : 0;
-        enumDirected = host != nullptr && count != INFINITE;
+        // An address that is no Steam lobby / SteamID / SteamNet game (a LAN IP, the broadcast address
+        // the game uses on a LAN) cannot point at a Steam game: list them all instead of none.
+        enumDirected = host != nullptr && count != INFINITE && target != 0;
+        Log("steam: looking for games%s%s%s", host ? " at \"" : "", host ? Narrow(AddressHost(host)).c_str() : "",
+            host ? (target ? "\"" : "\" (not a Steam address - all Steam games)") : "");
         enumStart = GetTickCount();
         enumTimeout = (timeout && timeout != INFINITE) ? timeout : (enumDirected ? 6000 : INFINITE);
         enumLastQuery = 0;
@@ -2116,6 +2127,16 @@ class SteamLobbies {
     CCallResult<SteamLobbies, LobbyEnter_t> crEnter;
     CCallResult<SteamLobbies, LobbyCreated_t> crCreate;
     uint32_t findSeq = 0, enterSeq = 0, createSeq = 0;
+    // Steam runs one lobby search at a time and cancels the older one when a new one starts, so
+    // the channel search and the channel list wait for each other (2.6.0 lost the first channel
+    // search at login that way). A search or an entry that never answers is started again.
+    bool searching = false, findQueued = false, listQueued = false, searchIsFind = false;
+    DWORD searchStart = 0, enterStart = 0;
+    int findTries = 0;
+    // Two players opening the same channel at once each make a lobby: a while after making one, look
+    // again and move to the fuller (or older) lobby of the channel, so everybody ends up in one.
+    DWORD mergeAt = 0;
+    bool mergeCheck = false;
     STEAM_CALLBACK(SteamLobbies, OnChatUpdate, LobbyChatUpdate_t);
     STEAM_CALLBACK(SteamLobbies, OnChatMsg, LobbyChatMsg_t);
     STEAM_CALLBACK(SteamLobbies, OnPersona, PersonaStateChange_t);
@@ -2142,6 +2163,7 @@ class SteamLobbies {
         return m;
     }
     void Fail(const char* why) {
+        enterStart = 0;
         Log("steamnet: channel \"%s\": %s", want.c_str(), why);
         en::LobbyEvent e;
         e.kind = en::LobbyEvent::ENTER_FAILED;
@@ -2151,6 +2173,8 @@ class SteamLobbies {
     void Leave() {
         if (lobby) SteamMatchmaking()->LeaveLobby(CSteamID(lobby));
         lobby = 0;
+        mergeAt = 0;
+        mergeCheck = false;
         unnamed.clear();
         memberGames.clear();
     }
@@ -2201,17 +2225,47 @@ class SteamLobbies {
         Leave();
         want = channel;
         seq++;
+        findTries = 0;
+        enterStart = GetTickCount();
+        findQueued = true;
+        NextSearch();
+    }
+    void NextSearch() {
+        if (searching) return;
         ISteamMatchmaking* mm = SteamMatchmaking();
-        mm->AddRequestLobbyListStringFilter(kChanKey, kChanVer, k_ELobbyComparisonEqual);
-        mm->AddRequestLobbyListStringFilter("chan", Lower(channel).c_str(), k_ELobbyComparisonEqual);
-        mm->AddRequestLobbyListDistanceFilter(k_ELobbyDistanceFilterWorldwide);
-        mm->AddRequestLobbyListResultCountFilter(10);
-        findSeq = seq;
-        crFind.Set(mm->RequestLobbyList(), this, &SteamLobbies::OnFind);
+        if (findQueued && !want.empty()) {
+            findQueued = false;
+            mm->AddRequestLobbyListStringFilter(kChanKey, kChanVer, k_ELobbyComparisonEqual);
+            mm->AddRequestLobbyListStringFilter("chan", Lower(want).c_str(), k_ELobbyComparisonEqual);
+            mm->AddRequestLobbyListDistanceFilter(k_ELobbyDistanceFilterWorldwide);
+            mm->AddRequestLobbyListResultCountFilter(10);
+            findSeq = seq;
+            searching = searchIsFind = true;
+            searchStart = GetTickCount();
+            crFind.Set(mm->RequestLobbyList(), this, &SteamLobbies::OnFind);
+        } else if (listQueued) {
+            listQueued = false;
+            mm->AddRequestLobbyListStringFilter(kChanKey, kChanVer, k_ELobbyComparisonEqual);
+            mm->AddRequestLobbyListDistanceFilter(k_ELobbyDistanceFilterWorldwide);
+            mm->AddRequestLobbyListResultCountFilter(50);
+            searching = true;
+            searchIsFind = false;
+            searchStart = GetTickCount();
+            crList.Set(mm->RequestLobbyList(), this, &SteamLobbies::OnList);
+        }
     }
     void OnFind(LobbyMatchList_t* r, bool io) {
-        if (findSeq != seq) return;
-        if (io) return Fail("lobby search failed");
+        searching = false;
+        if (findSeq != seq) return NextSearch();
+        if (io) {
+            if (++findTries >= 3) {
+                Fail("lobby search failed");
+                return NextSearch();
+            }
+            Log("steamnet: channel \"%s\": lobby search failed, again", want.c_str());
+            findQueued = true;
+            return NextSearch();
+        }
         ISteamMatchmaking* mm = SteamMatchmaking();
         uint64_t best = 0;
         int bestN = -1;
@@ -2219,6 +2273,16 @@ class SteamLobbies {
             CSteamID id = mm->GetLobbyByIndex((int)i);
             int n = mm->GetNumLobbyMembers(id);
             if (n > bestN || (n == bestN && id.ConvertToUint64() < best)) best = id.ConvertToUint64(), bestN = n;
+        }
+        NextSearch(); // the results are read: the channel list may search now
+        if (mergeCheck) {
+            mergeCheck = false;
+            if (!lobby || !best || best == lobby) return;
+            int ours = mm->GetNumLobbyMembers(CSteamID(lobby));
+            if (bestN < ours || (bestN == ours && best > lobby)) return;
+            Log("steamnet: channel \"%s\": another lobby %llu has it too, moving there", want.c_str(), (unsigned long long)best);
+            Leave();
+            enterStart = GetTickCount();
         }
         if (best) {
             Log("steamnet: channel \"%s\": joining lobby %llu (%d players)", want.c_str(), (unsigned long long)best, bestN);
@@ -2241,6 +2305,7 @@ class SteamLobbies {
         mm->SetLobbyData(CSteamID(lobby), kChanKey, kChanVer);
         mm->SetLobbyData(CSteamID(lobby), "chan", Lower(want).c_str());
         mm->SetLobbyData(CSteamID(lobby), "name", want.c_str());
+        mergeAt = GetTickCount() + 8000;
         Entered();
     }
     void OnEnter(LobbyEnter_t* r, bool io) {
@@ -2253,6 +2318,7 @@ class SteamLobbies {
         Entered();
     }
     void Entered() {
+        enterStart = 0;
         ISteamMatchmaking* mm = SteamMatchmaking();
         en::LobbyEvent e;
         e.kind = en::LobbyEvent::ENTERED;
@@ -2283,6 +2349,7 @@ class SteamLobbies {
     }
     void Tick() {
         PublishPending();
+        Watchdog();
         SteamNetworkingMessage_t* msgs[16];
         int n = NM()->ReceiveMessagesOnChannel(kWhisperChannel, msgs, 16);
         for (int i = 0; i < n; i++) {
@@ -2299,14 +2366,12 @@ class SteamLobbies {
         }
     }
     void RefreshChannels() {
-        ISteamMatchmaking* mm = SteamMatchmaking();
-        mm->AddRequestLobbyListStringFilter(kChanKey, kChanVer, k_ELobbyComparisonEqual);
-        mm->AddRequestLobbyListDistanceFilter(k_ELobbyDistanceFilterWorldwide);
-        mm->AddRequestLobbyListResultCountFilter(50);
-        crList.Set(mm->RequestLobbyList(), this, &SteamLobbies::OnList);
+        listQueued = true;
+        NextSearch();
     }
     void OnList(LobbyMatchList_t* r, bool io) {
-        if (io) return;
+        searching = false;
+        if (io) return NextSearch();
         ISteamMatchmaking* mm = SteamMatchmaking();
         en::LobbyEvent e;
         e.kind = en::LobbyEvent::CHANNELS;
@@ -2320,11 +2385,34 @@ class SteamLobbies {
         }
         if (!want.empty() && std::find(seen.begin(), seen.end(), Lower(want)) == seen.end()) e.channels.push_back(want);
         Push(e);
+        NextSearch();
+    }
+    void Watchdog() {
+        DWORD now = GetTickCount();
+        if (searching && now - searchStart > 10000) { // cancelled by another search, or lost
+            Log("steamnet: lobby search got no answer, again");
+            searching = false;
+            if (searchIsFind && findSeq == seq && !lobby) findQueued = true;
+            else if (!searchIsFind) listQueued = true;
+            NextSearch();
+        }
+        if (lobby && mergeAt && (int)(now - mergeAt) >= 0 && !searching) {
+            mergeAt = 0;
+            mergeCheck = true;
+            findQueued = true;
+            NextSearch();
+        }
+        if (!want.empty() && !lobby && enterStart && !searching && !findQueued && now - enterStart > 25000) {
+            Log("steamnet: channel \"%s\": no answer from Steam, entering again", want.c_str());
+            Enter(want); // a join or a create that never answered
+        }
     }
     void Stop() {
         Leave();
         want.clear();
         seq++;
+        findQueued = listQueued = false;
+        enterStart = 0;
         events.reset();
     }
 };
