@@ -2,6 +2,7 @@
 # with dist/KSNetFix-X.Y.zip. Release text: docs/release-notes/vX.Y.md (+ SHA-256 of the zip).
 # Run by hand (Actions -> release -> Run workflow, or the API) on a branch with tag vX.Y: builds
 # that branch and, if the tag does not exist yet, creates it on the built commit with the release.
+# prerelease=true publishes (or re-marks an existing release) as a pre-release.
 name: release
 on:
   push:
@@ -11,6 +12,10 @@ on:
       tag:
         description: 'release tag, e.g. v2.5 (created on the selected branch if missing)'
         required: true
+      prerelease:
+        description: 'mark the release as a pre-release (test build)'
+        type: boolean
+        default: false
 permissions:
   contents: write
 jobs:
@@ -56,8 +61,11 @@ jobs:
           ZIP="dist/KSNetFix-$VER.zip"
           NOTES="docs/release-notes/$TAG.md"
           { [ -f "$NOTES" ] && cat "$NOTES"; echo; echo "SHA-256 \`KSNetFix-$VER.zip\`: \`$(sha256sum "$ZIP" | cut -d' ' -f1)\`"; } > notes.md
+          PRE=""
+          [ "${{ inputs.prerelease }}" = "true" ] && PRE="--prerelease"
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "$ZIP" --clobber
+            [ -n "$PRE" ] && gh release edit "$TAG" --prerelease
           else
-            gh release create "$TAG" "$ZIP" --title "KSNetFix $VER" --notes-file notes.md --target "$GITHUB_SHA"
+            gh release create "$TAG" "$ZIP" --title "KSNetFix $VER" --notes-file notes.md --target "$GITHUB_SHA" $PRE
           fi
