@@ -64,8 +64,11 @@ jobs:
           PRE=""
           [ "${{ inputs.prerelease }}" = "true" ] && PRE="--prerelease"
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$ZIP" --clobber
-            [ -n "$PRE" ] && gh release edit "$TAG" --prerelease
+            if [ -n "$PRE" ]; then
+              gh release edit "$TAG" --prerelease # keep the published zip (its SHA-256 is in the notes)
+            else
+              gh release upload "$TAG" "$ZIP" --clobber
+            fi
           else
             gh release create "$TAG" "$ZIP" --title "KSNetFix $VER" --notes-file notes.md --target "$GITHUB_SHA" $PRE
           fi
