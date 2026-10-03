@@ -219,9 +219,18 @@ Po powrocie z meczu `0x82CEF0` ustawia wynik (`+0x2BB0` = `DAT_00f6258c`) i woł
 ruszył) → -1. Start meczu sieciowego (`0x82E890`, z `0x848080`) ustawia `DAT_00f62588` — serwer nie dostaje o nim
 komunikatu.
 
+Setter wyniku (`0x82E840`, ex2 `0x8313E0`) zapisuje go tylko w meczu „rankingowym” EarthNet (klient `+0x4A98 != -1`),
+więc mecze SteamNet zawsze kończą się `/play0`. Wołają go: porażka (`0x62CEC9`: 0, albo 2 bez flagi `+0x14 & 4`),
+zwycięstwo (`0x62D0B1`: 1, albo 2 gdy nie pokonano żadnego człowieka; `0x62D0BF`: 2) i „Wyjdź” z menu w trakcie meczu
+(`0x41ED4A`, ex2 `0x41EFBA`: 0, tylko gdy gra jeszcze trwa — `0x4B8FB0` z `0x97B378` zwraca 0).
+
 SteamNet: wygrana +3 pkt, porażka 0, rozłączenie -1. Serwer co 100 ms czyta `0xF62588`: gdy mecz rusza, od razu
-zapisuje rozłączenie (-1, rozł. +1), które wynik `/playv` / `/playd` zamienia na wygraną / porażkę, a `/play0`
-cofa — kto zamknie grę w trakcie meczu, zostaje z rozłączeniem. Każdy gracz zapisuje swój wpis (Steam nie pozwala
+zapisuje rozłączenie (-1, rozł. +1). KSNetFix podmienia setter (skok do `ResultSetter` w `earthnet.cpp`, oryginał
+zachowany) i zapamiętuje każdy ustawiony wynik, rozpoznając „Wyjdź” po adresie powrotu. Transport Steam liczy
+pozostałych w sesji graczy i tych, którzy z niej wyszli lub odpadli (`Steam_MatchPeople`). Po `/play0`
+(`JudgeMatch`): ostatnie zwycięstwo / porażka z meczu → wygrana / porażka; wszyscy przeciwnicy wyszli → wygrana
+(ostatni w meczu); „Wyjdź” z menu, gdy przeciwnicy grają dalej → rozłączenie zostaje; inaczej rozłączenie jest
+cofane. Gry RPG (`"RPG : …"`) nie wchodzą do rankingu. Kto zamknie grę w trakcie meczu, zostaje z rozłączeniem. Każdy gracz zapisuje swój wpis (Steam nie pozwala
 pisać cudzych) na trzech tablicach: ogólnej, miesięcznej i tygodniowej; wysyłki idą po kolei (Steam: jedna naraz,
 10 na 10 minut).
 

@@ -824,6 +824,8 @@ static void TestResults() {
     cfg.accountNick = "Wojtek";
     bool match = false;
     cfg.matchRunning = [&] { return match; };
+    en::MatchReport report; // what the game set and who is left in the session
+    cfg.matchReport = [&] { return report; };
     FakeRanking ranking;
     int64_t now = 1790812800; // Thursday 2026-10-01
     en::RankedBackend backend(ranking, [&] { return now; });
@@ -896,6 +898,83 @@ static void TestResults() {
     CHECK(r.disconnects == 1 && r.points == 2);
     // two uploads for a match with a result, one for an unfinished one
     CHECK(std::count(ranking.calls.begin(), ranking.calls.end(), "update SteamNet") == 7);
+
+    // the game sends /play0 for SteamNet matches; what it set decides
+    en::RankedBackend backend2(ranking, [&] { return now; }); // a new connection
+    en::Session s2(cfg, backend2, store, [&](const uint8_t* p, size_t n) { c.in.insert(c.in.end(), p, p + n); }, nullptr);
+    pkt = GamePacket(info);
+    s2.OnData(pkt.data(), pkt.size());
+    pkt = GamePacket(login);
+    CHECK(s2.OnData(pkt.data(), pkt.size()) && s2.LoggedIn());
+    auto send2 = [&](const std::string& line) {
+        std::string l = line;
+        l.push_back('\0');
+        CHECK(s2.OnData((const uint8_t*)l.data(), l.size()));
+    };
+    std::string game = "RTS : mapa";
+    auto play = [&](std::function<void()> during) {
+        match = false;
+        s2.Poll();
+        match = true;
+        s2.Poll();
+        during();
+        send2("/play0 \"g\" \"" + game + "\" \"\" \"g\"");
+        match = false;
+        s2.Poll();
+    };
+    send2("/playc \"g\" \"RTS : mapa\" \"\"");
+    report.opponents = 1;
+    // match 5: victory
+    play([&] { report.outcomes.push_back(en::MatchReport::VICTORY); });
+    r = entry("SteamNet");
+    CHECK(r.wins == 2 && r.losses == 1 && r.disconnects == 1 && r.points == 5);
+    // match 6: defeat, then left through the menu after the end (the game sets nothing more)
+    play([&] { report.outcomes.push_back(en::MatchReport::DEFEAT); });
+    r = entry("SteamNet");
+    CHECK(r.wins == 2 && r.losses == 2 && r.disconnects == 1 && r.points == 5);
+    // match 7: left through the menu while the opponent plays on - the disconnect stays
+    play([&] { report.outcomes.push_back(en::MatchReport::QUIT); });
+    r = entry("SteamNet");
+    CHECK(r.wins == 2 && r.losses == 2 && r.disconnects == 2 && r.points == 4);
+    // match 8: the opponent left, then this player quit through the menu - the last one wins
+    play([&] {
+        report.opponents = 0;
+        report.departed++;
+        report.outcomes.push_back(en::MatchReport::QUIT);
+    });
+    r = entry("SteamNet");
+    CHECK(r.wins == 3 && r.disconnects == 2 && r.points == 7);
+    // match 9: nobody was there from the start (no opponent left) - not rated
+    play([&] { report.outcomes.push_back(en::MatchReport::UNRATED); });
+    r = entry("SteamNet");
+    CHECK(r.wins == 3 && r.losses == 2 && r.disconnects == 2 && r.points == 7);
+    // match 10: an RPG game is not ranked at all, not even for a moment
+    send2("/plays \"00000000-0000-0000-0000-000000000000\" \"RPG : las\" \"\"");
+    report.opponents = 1;
+    game = "RPG : las";
+    auto uploads = [&] { return std::count(ranking.calls.begin(), ranking.calls.end(), "update SteamNet"); };
+    auto before = uploads();
+    play([&] { report.outcomes.push_back(en::MatchReport::QUIT); });
+    CHECK(uploads() == before);
+    r = entry("SteamNet");
+    CHECK(r.wins == 3 && r.losses == 2 && r.disconnects == 2 && r.points == 7);
+
+    en::MatchReport a, b;
+    std::string why;
+    CHECK(en::JudgeMatch(en::RESULT_LOSS, a, b, &why) == en::VERDICT_LOSS && why == "the game sent a loss");
+    CHECK(en::JudgeMatch(en::RESULT_NONE, a, b, &why) == en::VERDICT_NONE && why == "no result from the game");
+    b.opponents = 0; // alone, but nobody left: no win
+    CHECK(en::JudgeMatch(en::RESULT_NONE, a, b) == en::VERDICT_NONE);
+    b.departed = 2;
+    b.outcomes.push_back(en::MatchReport::UNRATED);
+    CHECK(en::JudgeMatch(en::RESULT_NONE, a, b, &why) == en::VERDICT_WIN && why == "every opponent left");
+    b.outcomes.push_back(en::MatchReport::DEFEAT); // beaten before the others left
+    CHECK(en::JudgeMatch(en::RESULT_NONE, a, b) == en::VERDICT_LOSS);
+    b.outcomes.push_back(en::MatchReport::UNRATED); // another player's end does not undo it
+    CHECK(en::JudgeMatch(en::RESULT_NONE, a, b) == en::VERDICT_LOSS);
+    a.outcomes = b.outcomes; // only what was set since the match began counts
+    b.outcomes.push_back(en::MatchReport::VICTORY);
+    CHECK(en::JudgeMatch(en::RESULT_NONE, a, b, &why) == en::VERDICT_WIN && why == "victory");
 }
 
 int main() {

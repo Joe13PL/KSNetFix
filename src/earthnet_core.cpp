@@ -493,18 +493,22 @@ void Session::OnClientLine(const std::string& line) {
         bool request = arg(1).size() == 36 && arg(1)[8] == '-' && arg(1)[13] == '-';
         if (request) {
             Log("host request \"%s\"", arg(2).c_str());
+            game_ = arg(2);
             backend_.OnHostRequest(*this, arg(2), arg(3));
         } else {
             Log("game hosted \"%s\" %s", arg(1).c_str(), arg(3).c_str());
+            game_ = arg(1);
             backend_.OnGameHosted(*this, arg(1), arg(3));
         }
     } else if (cmd == "/playv" || cmd == "/playd" || cmd == "/play0") {
         // /playX "guid" "game" "password" "guid" when the client is back from a match (0x80D720)
         Log("match result %s \"%s\"", cmd.c_str() + 5, arg(2).c_str());
+        if (!arg(2).empty()) game_ = arg(2);
         backend_.OnGameResult(*this, cmd == "/playv" ? RESULT_WIN : cmd == "/playd" ? RESULT_LOSS : RESULT_NONE);
     } else if (cmd == "/playc") {
         // /playc "guid" "name" "password" joins a listed game (0x80BAD0)
         Log("join request \"%s\"", arg(2).c_str());
+        game_ = arg(2);
         backend_.OnJoinGame(*this, arg(1), arg(2), arg(3));
     } else if (cmd == "/ladder" || cmd == "/ladderm" || cmd == "/ladderw") {
         LadderPeriod p = cmd == "/ladder" ? LADDER_ALL : cmd == "/ladderm" ? LADDER_MONTH : LADDER_WEEK;
@@ -802,15 +806,44 @@ void RankedBackend::Record(Session& s, const ResultChange& c) {
         ranking_.Update(RankingBoard(p, now), [c, nick, now](int& score, std::vector<int32_t>& d) { ApplyResult(score, d, c, nick, now); });
 }
 
+static bool RpgGame(const std::string& name) { return name.compare(0, 3, "RPG") == 0; }
+
+MatchVerdict JudgeMatch(GameResult sent, const MatchReport& start, const MatchReport& end, std::string* why) {
+    auto verdict = [why](MatchVerdict v, const char* reason) {
+        if (why) *why = reason;
+        return v;
+    };
+    if (sent == RESULT_WIN) return verdict(VERDICT_WIN, "the game sent a win");
+    if (sent == RESULT_LOSS) return verdict(VERDICT_LOSS, "the game sent a loss");
+    // the last result the game set in this match counts, as it would have for /playv and /playd;
+    // "not rated" only when there is nothing else (it may come for another player's end)
+    size_t first = start.outcomes.size() <= end.outcomes.size() ? start.outcomes.size() : 0;
+    bool set = end.outcomes.size() > first;
+    MatchReport::Outcome last = MatchReport::UNRATED;
+    for (size_t i = first; i < end.outcomes.size(); i++)
+        if (end.outcomes[i] != MatchReport::UNRATED) last = end.outcomes[i];
+    if (last == MatchReport::VICTORY) return verdict(VERDICT_WIN, "victory");
+    if (last == MatchReport::DEFEAT) return verdict(VERDICT_LOSS, "defeat");
+    if (end.opponents == 0 && end.departed > start.departed) return verdict(VERDICT_WIN, "every opponent left");
+    if (last == MatchReport::QUIT) return verdict(VERDICT_DISCONNECT, "left the match through the menu");
+    return verdict(VERDICT_NONE, set ? "not rated by the game" : "no result from the game");
+}
+
 void RankedBackend::Poll(Session& s) {
     bool running = s.MatchRunning();
     if (running && !matchWasRunning_ && !provisional_) {
-        // a match started: it counts as a disconnect until the result comes
-        ResultChange c;
-        c.disconnects = 1;
-        c.points = -1;
-        Record(s, c);
-        provisional_ = true;
+        start_ = s.Report();
+        if (RpgGame(s.GameName())) {
+            s.Log("match started \"%s\": RPG, not ranked", s.GameName().c_str());
+        } else {
+            // a match started: it counts as a disconnect until the result comes
+            s.Log("match started \"%s\" (%d opponents)", s.GameName().c_str(), start_.opponents);
+            ResultChange c;
+            c.disconnects = 1;
+            c.points = -1;
+            Record(s, c);
+            provisional_ = true;
+        }
     }
     matchWasRunning_ = running;
 }
@@ -822,14 +855,25 @@ void RankedBackend::OnGameResult(Session& s, GameResult r) {
         c.points = 1;
         provisional_ = false;
     }
-    if (r == RESULT_WIN) {
+    MatchReport end = s.Report();
+    std::string why = "RPG, not ranked";
+    MatchVerdict v = RpgGame(s.GameName()) ? VERDICT_NONE : JudgeMatch(r, start_, end, &why);
+    static const char* const names[] = {"win", "loss", "disconnect", "none"};
+    s.Log("match verdict %s: %s (opponents %d, departed %d)", names[v], why.c_str(), end.opponents,
+          end.departed - start_.departed);
+    if (v == VERDICT_WIN) {
         c.wins = 1;
         c.points += 3;
         s.ChannelMessage("SteamNet", "Wygrana zapisana w rankingu (+3 pkt).");
-    } else if (r == RESULT_LOSS) {
+    } else if (v == VERDICT_LOSS) {
         c.losses = 1;
         s.ChannelMessage("SteamNet", "Porazka zapisana w rankingu.");
+    } else if (v == VERDICT_DISCONNECT) {
+        c.disconnects += 1;
+        c.points -= 1;
+        s.ChannelMessage("SteamNet", "Wyjscie z trwajacego meczu: rozlaczenie w rankingu (-1 pkt).");
     }
+    start_ = end;
     if (c.wins || c.losses || c.disconnects) Record(s, c);
 }
 

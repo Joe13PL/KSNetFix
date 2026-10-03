@@ -21,14 +21,21 @@
 #include "patch.h"
 
 // --- helpers normally provided by ksnetfix.cpp -------------------------------------------
+static std::vector<std::string> g_logs;
 void Log(const char* fmt, ...) {
+    char buf[1024];
     va_list ap;
     va_start(ap, fmt);
-    printf("  log: ");
-    vprintf(fmt, ap);
-    printf("\n");
+    vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
+    printf("  log: %s\n", buf);
     fflush(stdout);
+    g_logs.push_back(buf);
+}
+static bool Logged(const std::string& text) {
+    for (auto& l : g_logs)
+        if (l.find(text) != std::string::npos) return true;
+    return false;
 }
 bool Match(uint32_t va, const uint8_t* bytes, size_t n) { return memcmp((void*)(uintptr_t)va, bytes, n) == 0; }
 bool WriteCode(uint32_t va, const void* bytes, size_t n) {
@@ -37,6 +44,19 @@ bool WriteCode(uint32_t va, const void* bytes, size_t n) {
     memcpy((void*)(uintptr_t)va, bytes, n);
     VirtualProtect((void*)(uintptr_t)va, n, old, &old);
     return true;
+}
+bool WriteRel32(uint32_t site, uint8_t opcode, const void* target, size_t pad) {
+    uint8_t b[16] = {opcode};
+    int32_t rel = (int32_t)((uint32_t)(uintptr_t)target - (site + 5));
+    memcpy(b + 1, &rel, 4);
+    memset(b + 5, 0x90, pad);
+    return WriteCode(site, b, 5 + pad);
+}
+bool MatchCall(uint32_t site, uint32_t target) {
+    uint8_t call[5] = {0xE8};
+    int32_t rel = (int32_t)(target - (site + 5));
+    memcpy(call + 1, &rel, 4);
+    return Match(site, call, sizeof(call));
 }
 void** FindImport(void* mod, const char* dll, const char* func) {
     auto* base = (uint8_t*)mod;
@@ -186,7 +206,41 @@ int main() {
     memcpy(g_clientObj, &kClientVtable, 4);
     memcpy(g_globalClientObj, &kClientVtable, 4);
     *(uint32_t**)(g_clientObj + 0x4A80) = g_oldLogin;
+
+    // The game's result setter (0x82E840) and two callers: the in-game menu's quit (push 0) and
+    // a victory (push 1); each is "push x; call setter; add esp, 4; ret".
+    static int32_t gameResult = -1;
+    auto* code = (uint8_t*)VirtualAlloc(nullptr, 4096, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    const uint8_t setter[40] = {0x55, 0x8B, 0xEC, 0xA1, 0, 0, 0, 0, 0x85, 0xC0, 0x74, 0x18, 0x83, 0xB8, 0x98, 0x4A,
+                                0x00, 0x00, 0xFF, 0x74, 0x0F, 0x8B, 0x45, 0x08, 0xA3, 0, 0, 0, 0, 0xB8, 0x01, 0x00,
+                                0x00, 0x00, 0x5D, 0xC3, 0x33, 0xC0, 0x5D, 0xC3};
+    memcpy(code, setter, sizeof(setter));
+    uint32_t clientGlobal = (uint32_t)(uintptr_t)&g_clientPtr, resultGlobal = (uint32_t)(uintptr_t)&gameResult;
+    memcpy(code + 4, &clientGlobal, 4);
+    memcpy(code + 25, &resultGlobal, 4);
+    auto caller = [&](int at, uint8_t value) {
+        uint8_t* c = code + at;
+        c[0] = 0x6A, c[1] = value, c[2] = 0xE8;
+        int32_t rel = (int32_t)((uint32_t)(uintptr_t)code - (uint32_t)(uintptr_t)(c + 7));
+        memcpy(c + 3, &rel, 4);
+        c[7] = 0x83, c[8] = 0xC4, c[9] = 0x04, c[10] = 0xC3;
+        return (int(__cdecl*)())(void*)c;
+    };
+    auto quit = caller(64, 0), victory = caller(96, 1);
+    addrs.resultSetter = (uint32_t)(uintptr_t)code;
+    addrs.resultGlobal = resultGlobal;
+    addrs.quitCall = (uint32_t)(uintptr_t)code + 64 + 2;
     CHECK(SteamNet_Install(st, addrs));
+    CHECK(Logged("steamnet: match results: ok"));
+    // a SteamNet match (client+0x4A98 = -1): the game keeps nothing, SteamNet still learns the result
+    *(int32_t*)(g_globalClientObj + 0x4A98) = -1;
+    quit();
+    CHECK(gameResult == -1 && Logged("match result 0 at") && Logged(": quit"));
+    // a rated EarthNet match: kept as before
+    *(int32_t*)(g_globalClientObj + 0x4A98) = 7;
+    victory();
+    CHECK(gameResult == 1 && Logged("match result 1 at") && Logged(": victory"));
+    *(int32_t*)(g_globalClientObj + 0x4A98) = 0;
     SteamNet_SetRanking(&g_ranking);
     SteamNet_SetAccount(&SteamAccount);
     SteamNet_SetLobbies(&g_lobbies);

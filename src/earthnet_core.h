@@ -110,6 +110,16 @@ class PlayerStore {
     virtual void Save(const std::string& nick, const std::string& key, const std::vector<uint8_t>& data) = 0;
 };
 
+// What the game and the transport saw of a match (SessionConfig::matchReport).
+struct MatchReport {
+    // A result the game set for this player (its result setter, 0x82E840): victory or defeat,
+    // UNRATED (victory/defeat with value 2: no human opponent beaten), QUIT (left through the menu).
+    enum Outcome { VICTORY, DEFEAT, UNRATED, QUIT };
+    std::vector<Outcome> outcomes; // every result set since the game started, oldest first
+    int opponents = -1;            // other players in the session now, or when it ended for us (-1: unknown)
+    int departed = 0;              // other players that left or dropped since the session began
+};
+
 struct SessionConfig {
     std::string welcome = "SteamNet";
     std::string channel = "KnightShift";
@@ -120,6 +130,7 @@ struct SessionConfig {
     std::string previousLogin;      // the game's own login before SteamNet replaced it (old saved data)
     std::function<void()> beforeHello; // runs right before the hello reply (the client logs in on it)
     std::function<bool()> matchRunning; // a SteamNet match is being played (the game's 0xF62588)
+    std::function<MatchReport()> matchReport; // what decides a match result besides /playv and /playd
 };
 
 class Session {
@@ -134,6 +145,10 @@ class Session {
     void OnClosed();
     void Poll() { if (LoggedIn()) backend_.Poll(*this); } // call often from the session's thread
     bool MatchRunning() const { return cfg_.matchRunning && cfg_.matchRunning(); }
+    MatchReport Report() const { return cfg_.matchReport ? cfg_.matchReport() : MatchReport(); }
+    // The game last hosted (/plays) or joined (/playc), e.g. "RTS : mapa" or "RPG : las".
+    const std::string& GameName() const { return game_; }
+    void Log(const char* fmt, ...);
 
     const std::string& Nick() const { return nick_; }      // as the game logged in
     const std::string& PublicName() const { return cfg_.accountNick.empty() ? nick_ : cfg_.accountNick; }
@@ -170,7 +185,6 @@ class Session {
     bool OnPacket(const uint8_t* p, size_t n);
     void OnClientLine(const std::string& line);
     void OnBinary(const std::vector<uint8_t>& data);
-    void Log(const char* fmt, ...);
     bool OwnName(const std::string& nick) const { return nick == nick_ || nick == PublicName(); }
 
     SessionConfig cfg_;
@@ -180,7 +194,7 @@ class Session {
     LogFn log_;
     State state_ = CLIENT_INFO;
     std::vector<uint8_t> in_;
-    std::string nick_, channel_, guid_;
+    std::string nick_, channel_, guid_, game_;
     // pending binary block after a /setplayerdata line
     size_t binNeed_ = 0;
     std::string binNick_, binKey_;
@@ -239,6 +253,13 @@ struct ResultChange {
 };
 void ApplyResult(int& score, std::vector<int32_t>& details, const ResultChange& c, const std::string& nick, int64_t now);
 
+// How a finished match counts. The game sends /play0 for SteamNet matches (it rates only EarthNet
+// ones), so the result comes from what it set (start = the report when the match began):
+// victory -> win, defeat -> loss; every opponent gone -> win (the last one in the match);
+// left through the menu with opponents still playing -> the disconnect stays; otherwise nothing.
+enum MatchVerdict { VERDICT_WIN, VERDICT_LOSS, VERDICT_DISCONNECT, VERDICT_NONE };
+MatchVerdict JudgeMatch(GameResult sent, const MatchReport& start, const MatchReport& end, std::string* why = nullptr);
+
 class RankedBackend : public LocalBackend {
   public:
     RankedBackend(RankingService& r, std::function<int64_t()> now) : ranking_(r), now_(std::move(now)) {}
@@ -255,6 +276,7 @@ class RankedBackend : public LocalBackend {
     RankingService& ranking_;
     std::function<int64_t()> now_;
     bool matchWasRunning_ = false, provisional_ = false; // a disconnect is on the boards for this match
+    MatchReport start_; // the report when the match began
 };
 
 class MemoryStore : public PlayerStore {

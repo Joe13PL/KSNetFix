@@ -292,6 +292,9 @@ class SteamService {
     CRITICAL_SECTION sendCs;   // SendMessageToUser
     std::deque<std::function<void()>> events;
     SteamPeer* peer = nullptr; // active peer (the game uses one at a time)
+    // Steam_MatchPeople: other players when the last session ended for us, and how many of them
+    // left or dropped since it began (the remaining player of a match wins).
+    int tallyOpponents = -1, tallyDeparted = 0;
     uint64_t me = 0;
     std::wstring myName;
     uint64_t inviteLobby = 0;
@@ -412,6 +415,12 @@ class SteamPeer : public IDirectPlay8Peer_ {
         for (auto& kv : players)
             if (kv.second.steam == s && !kv.second.local) return &kv.second;
         return nullptr;
+    }
+    int Opponents() const {
+        int n = 0;
+        for (auto& kv : players)
+            if (!kv.second.local) n++;
+        return n;
     }
 
     void DeliverReceive(DPNID from, void* ctx, const uint8_t* d, size_t n) {
@@ -766,6 +775,7 @@ class SteamPeer : public IDirectPlay8Peer_ {
             st = St::Hosting;
             epoch++;
             me = localId;
+            g_svc->tallyDeparted = 0;
         }
         Log("steam: hosting \"%s\" (max %u players)", Narrow(desc.name).c_str(), (unsigned)desc.maxPlayers);
         DeliverCreate(me); // DirectPlay indicates the local host player before Host() returns
@@ -965,6 +975,7 @@ class SteamPeer : public IDirectPlay8Peer_ {
                 ids.push_back(kv.first);
                 if (!kv.second.local) to.push_back(kv.second.steam);
             }
+            if (was == St::Hosting || was == St::Connected) g_svc->tallyOpponents = Opponents();
             epoch++; // drop queued events of this session
         }
         if (was == St::Hosting) {
@@ -1214,6 +1225,8 @@ class SteamPeer : public IDirectPlay8Peer_ {
             Lock l(&g_svc->cs);
             if (st != St::Hosting && st != St::Connected) return;
             for (auto& kv : players) ids.push_back(kv.first);
+            g_svc->tallyDeparted += Opponents(); // the host ended it: everybody is gone
+            g_svc->tallyOpponents = 0;
             L = lobby;
             lobby = 0;
             st = St::Idle;
@@ -1268,6 +1281,7 @@ class SteamPeer : public IDirectPlay8Peer_ {
                 if (st != St::Connected || from != hostSteam) return;
                 Player* p = Find(id);
                 if (!p || p->local) return;
+                g_svc->tallyDeparted++;
             }
             DeliverDestroy(id, reason ? reason : DPNDESTROYPLAYERREASON_NORMAL_);
             break;
@@ -1336,6 +1350,7 @@ class SteamPeer : public IDirectPlay8Peer_ {
                 Player* p = FindSteam(from);
                 if (!p) return;
                 id = p->id;
+                g_svc->tallyDeparted++;
                 for (auto& kv : players)
                     if (!kv.second.local && kv.second.steam != from) others.push_back(kv.second.steam);
             }
@@ -1521,6 +1536,7 @@ class SteamPeer : public IDirectPlay8Peer_ {
             hc = hConnect;
             cc = connectCtx;
             st = St::Connected;
+            g_svc->tallyDeparted = 0;
         }
         Log("steam: connected as %08X to host %08X (%u players)", (unsigned)me, (unsigned)host, (unsigned)list.size());
         char rp[64];
@@ -1547,6 +1563,7 @@ class SteamPeer : public IDirectPlay8Peer_ {
             id = p->id;
             hostLost = p->host;
             amHost = st == St::Hosting;
+            if (!hostLost) g_svc->tallyDeparted++; // a lost host ends the session (LocalTerminate)
             if (amHost)
                 for (auto& kv : players)
                     if (!kv.second.local && kv.second.steam != s) others.push_back(kv.second.steam);
@@ -2545,6 +2562,15 @@ void Steam_Configure(const SteamSettings& s, HCoCreate orig) {
 en::RankingService* Steam_Ranking() {
     static SteamRanking r;
     return &r;
+}
+
+bool Steam_MatchPeople(int& opponents, int& departed) {
+    if (!g_steamOk || !g_svc) return false;
+    Lock l(&g_svc->cs);
+    SteamPeer* p = g_svc->peer;
+    opponents = p && (p->st == St::Hosting || p->st == St::Connected) ? p->Opponents() : g_svc->tallyOpponents;
+    departed = g_svc->tallyDeparted;
+    return true;
 }
 
 unsigned long long Steam_AccountId() { return g_steamOk && g_svc && !g_gs ? g_svc->me : 0; }

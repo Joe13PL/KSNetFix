@@ -17,6 +17,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#ifdef _MSC_VER
+#include <intrin.h>
+#pragma intrinsic(_ReturnAddress)
+#define RETURN_ADDRESS() _ReturnAddress()
+#else
+#define RETURN_ADDRESS() __builtin_return_address(0)
+#endif
 
 #include <memory>
 #include <string>
@@ -38,6 +45,8 @@ SteamNetGameAddrs A;
 en::RankingService* g_ranking;
 en::LobbyService* g_lobbies;
 SteamNetAccount (*g_accountFn)();
+bool (*g_matchPeople)(int&, int&);
+std::vector<en::MatchReport::Outcome> g_outcomes; // every result the game set (g_cs)
 SteamNetAccount g_account;    // Steam account the game logs in with (set in our connect())
 std::string g_previousLogin;  // the game's own login it replaces
 uint32_t* g_pendingLogin;     // login string waiting for the hello reply
@@ -201,6 +210,15 @@ DWORD WINAPI ConnectionThread(void* param) {
     LeaveCriticalSection(&g_cs);
     cfg.beforeHello = [] { InstallSteamLogin(); };
     if (A.matchFlag) cfg.matchRunning = [] { return G<volatile uint32_t>(A.matchFlag) != 0; };
+    cfg.matchReport = [] {
+        en::MatchReport r;
+        EnterCriticalSection(&g_cs);
+        r.outcomes = g_outcomes;
+        LeaveCriticalSection(&g_cs);
+        int opponents, departed;
+        if (g_matchPeople && g_matchPeople(opponents, departed)) r.opponents = opponents, r.departed = departed;
+        return r;
+    };
     std::unique_ptr<en::Backend> backendPtr;
     static en::NoRanking noRanking;
     en::RankingService& ranking = g_ranking && S.ranking ? *g_ranking : noRanking;
@@ -407,6 +425,41 @@ void InstallSteamLogin() {
     Log("steamnet: logging in as the Steam account \"%s\" (the game had \"%s\")", name.c_str(), was);
 }
 
+// ---------------------------------------------------------------------------
+// Match results. The game keeps the player's result (0x82E840) only for rated EarthNet matches,
+// so SteamNet matches always end with /play0. The replacement keeps what the game decided:
+// victory (0x62CFA0) sets 1, defeat (0x62CE30) 0, both 2 when no human opponent was beaten,
+// and "quit" in the in-game menu (0x41EC80) 0 while the match still goes on.
+// ---------------------------------------------------------------------------
+int __cdecl ResultSetter(int result) {
+    uint32_t from = (uint32_t)(uintptr_t)RETURN_ADDRESS();
+    en::MatchReport::Outcome o = result == 1 ? en::MatchReport::VICTORY
+                                 : result != 0 ? en::MatchReport::UNRATED
+                                 : from == A.quitCall + 5 ? en::MatchReport::QUIT : en::MatchReport::DEFEAT;
+    static const char* const names[] = {"victory", "defeat", "not rated", "quit"};
+    Log("steamnet: the game set match result %d at %08X: %s", result, (unsigned)(from - 5), names[o]);
+    EnterCriticalSection(&g_cs);
+    g_outcomes.push_back(o);
+    LeaveCriticalSection(&g_cs);
+    // the original: kept only while connected to EarthNet for a rated match (client+0x4A98)
+    uint32_t client = G<uint32_t>(A.client);
+    if (!client || G<int32_t>(client + 0x4A98) == -1) return 0;
+    G<int32_t>(A.resultGlobal) = result;
+    return 1;
+}
+
+bool InstallResultHook() {
+    if (!A.resultSetter || !A.resultGlobal || !A.client) return false;
+    uint8_t code[40] = {0x55, 0x8B, 0xEC, 0xA1, 0, 0, 0, 0, 0x85, 0xC0, 0x74, 0x18, 0x83, 0xB8, 0x98, 0x4A,
+                        0x00, 0x00, 0xFF, 0x74, 0x0F, 0x8B, 0x45, 0x08, 0xA3, 0, 0, 0, 0, 0xB8, 0x01, 0x00,
+                        0x00, 0x00, 0x5D, 0xC3, 0x33, 0xC0, 0x5D, 0xC3};
+    memcpy(code + 4, &A.client, 4);
+    memcpy(code + 25, &A.resultGlobal, 4);
+    if (!Match(A.resultSetter, code, sizeof(code))) return false;
+    if (A.quitCall && !MatchCall(A.quitCall, A.resultSetter)) A.quitCall = 0;
+    return WriteRel32(A.resultSetter, 0xE9, (void*)&ResultSetter);
+}
+
 HANDLE WINAPI HookGetHostByName(HWND wnd, u_int msg, const char* name, char* buf, int buflen) {
     if (IsOurHost(name) && EnsureServer()) {
         CaptureClient(buf);
@@ -478,6 +531,7 @@ void SteamNet_LoadConfig(const char* ini, SteamNetSettings& s) {
 void SteamNet_SetRanking(en::RankingService* r) { g_ranking = r; }
 void SteamNet_SetLobbies(en::LobbyService* l) { g_lobbies = l; }
 void SteamNet_SetAccount(SteamNetAccount (*account)()) { g_accountFn = account; }
+void SteamNet_SetMatchPeople(bool (*people)(int&, int&)) { g_matchPeople = people; }
 
 bool SteamNet_Install(const SteamNetSettings& s, const SteamNetGameAddrs& game) {
     S = s;
@@ -489,6 +543,8 @@ bool SteamNet_Install(const SteamNetSettings& s, const SteamNetGameAddrs& game) 
 
     bool renamed = Rename();
     Log("steamnet: menu entry \"%s\": %s", Narrow(S.name).c_str(), renamed ? "ok" : "signature mismatch");
+    if (A.resultSetter)
+        Log("steamnet: match results: %s", InstallResultHook() ? (A.quitCall ? "ok" : "ok (menu quit not found)") : "signature mismatch");
     void** slot = FindImport(GetModuleHandleA(nullptr), "kernel32.dll", "GetProcAddress");
     if (!slot) return false;
     g_realGetProcAddress = (GetProcAddressFn)*slot;

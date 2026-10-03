@@ -27,6 +27,9 @@ struct SteamNetGameAddrs {
     uint32_t memAlloc = 0;     // the game's allocator, void* __cdecl(size_t)
     uint32_t loginGlobal = 0;  // the saved login (ANSI string object; profile, "X entered the channel")
     uint32_t matchFlag = 0;    // non-zero while an EarthNet match is played (set by 0x82E890)
+    uint32_t resultSetter = 0; // int __cdecl(int): the player's match result, 1 won / 0 lost / 2 not rated
+    uint32_t resultGlobal = 0; // where it keeps the result (only for rated EarthNet matches)
+    uint32_t quitCall = 0;     // its call from the in-game menu's "quit" (0: lost by leaving)
 };
 
 // Renames the menu entry and hooks the game's winsock lookups. Call from DllMain.
@@ -44,3 +47,6 @@ struct SteamNetAccount {
     uint64_t id = 0;
 };
 void SteamNet_SetAccount(SteamNetAccount (*account)());
+// Who is in the Steam game session: other players now (or when it ended for us) and how many
+// left or dropped since it began; false when unknown. Decides the win of the last one in a match.
+void SteamNet_SetMatchPeople(bool (*people)(int& opponents, int& departed));

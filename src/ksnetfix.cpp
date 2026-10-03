@@ -30,7 +30,7 @@
 
 #pragma comment(lib, "winmm.lib")
 
-#define KSNETFIX_VERSION "2.6.2"
+#define KSNETFIX_VERSION "2.6.3"
 
 // ---------------------------------------------------------------------------
 // Per-build addresses (all verified by signature before use)
@@ -1204,16 +1204,19 @@ static void Install() {
         // the host lookup buffer in it, the game's allocator, the saved login, the match flag.
         if (A == &kEx1)
             g.client = 0x00F625B0, g.clientVtable = 0x008FABA0, g.lookupBuffer = 0x4AB0, g.memAlloc = 0x007971D0,
-            g.loginGlobal = 0x00A58F08, g.matchFlag = 0x00F62588;
+            g.loginGlobal = 0x00A58F08, g.matchFlag = 0x00F62588,
+            g.resultSetter = 0x0082E840, g.resultGlobal = 0x00F6258C, g.quitCall = 0x0041ED4A;
         else // ex2: same code, other addresses (connect 0x802470, result 0x82FA90)
             g.client = 0x0152DAF0, g.clientVtable = 0x00901DB8, g.lookupBuffer = 0x4AB0, g.memAlloc = 0x00799E90,
-            g.loginGlobal = 0x00A67958, g.matchFlag = 0x0152DAC8;
+            g.loginGlobal = 0x00A67958, g.matchFlag = 0x0152DAC8,
+            g.resultSetter = 0x008313E0, g.resultGlobal = 0x0152DACC, g.quitCall = 0x0041EFBA;
         Log("steamnet (EarthNet -> local server%s): %s", A == &kEx1 ? "" : ", D3D8 shaders build",
             SteamNet_Install(cfg.steamNet, g) ? "ok" : "FAILED");
         bool ranking = cfg.steamNet.ranking && cfg.steam.enabled && !cfg.steam.gameServer;
         if (ranking) SteamNet_SetRanking(Steam_Ranking());
         bool online = cfg.steamNet.online && cfg.steam.enabled && !cfg.steam.gameServer;
         if (online) SteamNet_SetLobbies(Steam_Lobbies());
+        if (cfg.steam.enabled && !cfg.steam.gameServer) SteamNet_SetMatchPeople(Steam_MatchPeople);
         Log("steamnet channels: %s", online ? "Steam lobbies (online)" : "offline");
         bool steamLogin = cfg.steamNet.steamLogin && cfg.steam.enabled && !cfg.steam.gameServer && g.client;
         if (steamLogin) SteamNet_SetAccount([] {
