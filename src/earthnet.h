@@ -14,6 +14,7 @@ struct SteamNetSettings {
     bool ranking = true;             // ranking on Steam leaderboards (needs the Steam transport)
     bool steamLogin = true;          // log in with the Steam account name (no login window)
     bool online = true;              // channels, players and chat shared through Steam lobbies
+    bool banner = true;              // SteamNet banner above the lobby chat instead of EarthNet's
 };
 
 void SteamNet_LoadConfig(const char* iniPath, SteamNetSettings& s);
@@ -32,6 +33,7 @@ struct SteamNetGameAddrs {
     uint32_t quitCall = 0;     // its call from the in-game menu's "quit" (0: lost by leaving)
     uint32_t defeatCall = 0;   // its call from the local player's defeat (2 outside rated matches)
     uint32_t victoryCalls[2] = {0, 0}; // its calls from the local player's victory (2 outside rated matches)
+    uint32_t fileOpen = 0;     // int __thiscall(file, name, flags): opens a game file (archives or disk)
 };
 
 // Renames the menu entry and hooks the game's winsock lookups. Call from DllMain.
@@ -52,3 +54,7 @@ void SteamNet_SetAccount(SteamNetAccount (*account)());
 // Who is in the Steam game session: other players now (or when it ended for us) and how many
 // left or dropped since it began; false when unknown. Decides the win of the last one in a match.
 void SteamNet_SetMatchPeople(bool (*people)(int& opponents, int& departed));
+// The lobby banner served instead of Banners\BannerDef.tex (the game's texture format, 640x128);
+// written to SteamNet\Banner.tex in the game's output dir (the game folder) when the lobby first
+// shows it. Call before the install.
+void SteamNet_SetBanner(const void* tex, size_t size);

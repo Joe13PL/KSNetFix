@@ -63,8 +63,10 @@ IFS=';' read -r -a LIST <<< "${KSNF_EXTRA_SRC:-}"
 for f in "${LIST[@]}"; do [ -n "$f" ] && EXTRA+=("$(win "$f")"); done
 IFS=';' read -r -a LIST <<< "${KSNF_INCLUDE:-}"
 for d in "${LIST[@]}"; do [ -n "$d" ] && INCLUDE="$INCLUDE;$(win "$d")"; done
-"$CL" $CFLAGS -LD $KSNF_DEFINES -Fo"$O/" -Fd"$O/" ksnetfix.cpp steampeer.cpp earthnet.cpp earthnet_core.cpp "${EXTRA[@]}" \
+# resources: the SteamNet lobby banner (res/steamnet_banner.tex)
+"$WINSDK/bin/$WINSDKV/x86/rc.exe" -nologo -fo"$O/ksnetfix.res" ksnetfix.rc
+"$CL" $CFLAGS -LD $KSNF_DEFINES -Fo"$O/" -Fd"$O/" ksnetfix.cpp steampeer.cpp earthnet.cpp earthnet_core.cpp "$O/ksnetfix.res" "${EXTRA[@]}" \
   -link -DEF:dinput8.def -OUT:"$O/dinput8.dll" -IMPLIB:"$O/dinput8.lib" -PDB:"$O/dinput8.pdb" -PDBALTPATH:%_PDB% -DEBUG -OPT:REF $LIBS
-rm -f "$OUT/dinput8.exp" "$OUT/dinput8.lib"
+rm -f "$OUT/dinput8.exp" "$OUT/dinput8.lib" "$OUT/ksnetfix.res"
 cp "$SDKROOT/redistributable_bin/steam_api.dll" "$OUT/steam_api.dll"
 echo "built: $OUT/dinput8.dll (+ steam_api.dll)"

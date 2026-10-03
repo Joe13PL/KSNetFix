@@ -30,7 +30,7 @@
 
 #pragma comment(lib, "winmm.lib")
 
-#define KSNETFIX_VERSION "2.6.4"
+#define KSNETFIX_VERSION "2.6.5"
 
 // ---------------------------------------------------------------------------
 // Per-build addresses (all verified by signature before use)
@@ -157,6 +157,7 @@ struct Config {
 static Config cfg;
 
 static char g_dir[MAX_PATH];
+static HMODULE g_module; // this DLL (resources)
 
 static void LoadConfig() {
     char ini[MAX_PATH];
@@ -1206,12 +1207,17 @@ static void Install() {
             g.client = 0x00F625B0, g.clientVtable = 0x008FABA0, g.lookupBuffer = 0x4AB0, g.memAlloc = 0x007971D0,
             g.loginGlobal = 0x00A58F08, g.matchFlag = 0x00F62588,
             g.resultSetter = 0x0082E840, g.resultGlobal = 0x00F6258C, g.quitCall = 0x0041ED4A,
-            g.defeatCall = 0x0062CEC9, g.victoryCalls[0] = 0x0062D0B1, g.victoryCalls[1] = 0x0062D0BF;
+            g.defeatCall = 0x0062CEC9, g.victoryCalls[0] = 0x0062D0B1, g.victoryCalls[1] = 0x0062D0BF,
+            g.fileOpen = 0x00799BC0;
         else // ex2: same code, other addresses (connect 0x802470, result 0x82FA90)
             g.client = 0x0152DAF0, g.clientVtable = 0x00901DB8, g.lookupBuffer = 0x4AB0, g.memAlloc = 0x00799E90,
             g.loginGlobal = 0x00A67958, g.matchFlag = 0x0152DAC8,
             g.resultSetter = 0x008313E0, g.resultGlobal = 0x0152DACC, g.quitCall = 0x0041EFBA,
-            g.defeatCall = 0x0062DF49, g.victoryCalls[0] = 0x0062E131, g.victoryCalls[1] = 0x0062E13F;
+            g.defeatCall = 0x0062DF49, g.victoryCalls[0] = 0x0062E131, g.victoryCalls[1] = 0x0062E13F,
+            g.fileOpen = 0x0079C880;
+        // the lobby banner (ksnetfix.rc: 101 = res\steamnet_banner.tex)
+        if (HRSRC r = FindResourceA(g_module, MAKEINTRESOURCEA(101), MAKEINTRESOURCEA(10))) // RT_RCDATA
+            if (HGLOBAL h = LoadResource(g_module, r)) SteamNet_SetBanner(LockResource(h), SizeofResource(g_module, r));
         Log("steamnet (EarthNet -> local server%s): %s", A == &kEx1 ? "" : ", D3D8 shaders build",
             SteamNet_Install(cfg.steamNet, g) ? "ok" : "FAILED");
         bool ranking = cfg.steamNet.ranking && cfg.steam.enabled && !cfg.steam.gameServer;
@@ -1268,6 +1274,7 @@ extern "C" HRESULT WINAPI Proxy_DirectInput8Create(HINSTANCE hinst, DWORD ver, R
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
+        g_module = inst;
         InitializeCriticalSection(&g_logLock);
         InitializeCriticalSection(&D.cs);
         GetModuleFileNameA(nullptr, g_dir, MAX_PATH);

@@ -1,6 +1,6 @@
 @echo off
 setlocal
-title KSNetFix 2.6.4 - odinstalowanie
+title KSNetFix 2.6.5 - odinstalowanie
 set "GAME=%~1"
 if not "%GAME%"=="" goto check
 for /f "tokens=2,*" %%A in ('reg query "HKLM\SOFTWARE\WOW6432Node\Reality Pump\KnightShift\BaseGame\FileSystem" /v outputdir 2^>nul ^| find /i "outputdir"') do set "GAME=%%B"
@@ -19,6 +19,8 @@ for %%F in (dinput8.dll steam_api.dll ksnetfix.ini ksnetfix.ini.bak ksnettrace.l
   if exist "%GAME%\%%F" del /q "%GAME%\%%F"
 )
 del /q "%GAME%\ksnetfix*.log" 2>nul
+rem baner lobby SteamNet (bohaterowie RPG w folderze SteamNet zostaja)
+if exist "%GAME%\SteamNet\Banner.tex" del /q "%GAME%\SteamNet\Banner.tex"
 if exist "%GAME%\dinput8.dll" (
   echo Nie udalo sie usunac plikow - uruchom jako administrator.
   goto end

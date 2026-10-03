@@ -238,6 +238,17 @@ cofane. Gry RPG (`"RPG : …"`) nie wchodzą do rankingu. Kto zamknie grę w tra
 pisać cudzych) na trzech tablicach: ogólnej, miesięcznej i tygodniowej; wysyłki idą po kolei (Steam: jedna naraz,
 10 na 10 minut).
 
+### Baner lobby
+
+Nad czatem lobby (`0x82B990`, kontrolka `0x566`) gra pokazuje `Banners\BannerDef.tex` z `Interface.wd`: logo
+EarthNet, 640×128, pięć tekstur 128×128 (`TEX\0`, wersja 2, flagi `0x03000002`, `0x8888`, piksele w kolejności
+R, G, B, A). Banery przysłane przez serwer EarthNet trafiały do `Banners\????????.tex` (lista GUID-ów w kliencie,
+`0x7FCED0`); SteamNet ich nie wysyła, więc zostaje domyślny. Każdy plik gra otwiera przez `0x799BC0` (ex2 `0x79C880`,
+`__thiscall(plik, nazwa, flagi)`): nazwa jest szukana w archiwach i folderze gry, flaga 2 otwiera `<katalog
+wyjściowy> + nazwa` z dysku (katalog wyjściowy: globalna czytana pod `+0x8B`, zwykle folder gry). KSNetFix
+podmienia tylko tę jedną nazwę na `SteamNet\Banner.tex` w katalogu wyjściowym, zapisany z zasobu DLL
+(`src/res/steamnet_banner.tex`, z PNG przez `tools/banner_tex.py`).
+
 ### Komendy klienta
 
 | linia | kiedy |

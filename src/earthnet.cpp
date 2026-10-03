@@ -46,6 +46,8 @@ en::RankingService* g_ranking;
 en::LobbyService* g_lobbies;
 SteamNetAccount (*g_accountFn)();
 bool (*g_matchPeople)(int&, int&);
+const void* g_bannerTex;      // the SteamNet banner (game texture), from the DLL's resources
+size_t g_bannerSize;
 std::vector<en::MatchReport::Outcome> g_outcomes; // every result the game set (g_cs)
 SteamNetAccount g_account;    // Steam account the game logs in with (set in our connect())
 std::string g_previousLogin;  // the game's own login it replaces
@@ -467,6 +469,91 @@ bool InstallResultHook() {
     return WriteRel32(A.resultSetter, 0xE9, (void*)&ResultSetter);
 }
 
+// ---------------------------------------------------------------------------
+// Lobby banner. The lobby (0x82B990) shows Banners\BannerDef.tex from Interface.wd (EarthNet's logo,
+// 640x128) unless the server sent banners of its own. Every game file is opened by 0x799BC0
+// (__thiscall file, name, flags): names are looked up in the archives and the game folder, flag 2
+// opens <output dir> + name on disk instead (the output dir: the global read at +0x8B, usually the
+// game folder). The hook sends that one name to SteamNet\Banner.tex in the output dir.
+// ---------------------------------------------------------------------------
+typedef int(__fastcall* FileOpenFn)(void* file, void* edx, const char* name, unsigned flags);
+FileOpenFn g_fileOpen;        // the original (trampoline)
+uint32_t g_outputDir;         // the game's output dir: pointer to its string (+8 length, +0xC text)
+std::string g_bannerFile;     // the banner on disk, and the name the game opens it by (flag 2)
+std::string g_bannerOpen;
+LONG g_bannerState;           // 0 not yet, 1 ready, -1 failed
+
+bool IsBannerName(const char* name) { // [...\]Banners\BannerDef.tex, any case, \ or /
+    auto sep = [](char c) { return c == '\\' || c == '/'; };
+    size_t n = name ? strlen(name) : 0;
+    if (n < 21 || _stricmp(name + n - 13, "bannerdef.tex") != 0 || !sep(name[n - 14]) ||
+        _strnicmp(name + n - 21, "banners", 7) != 0)
+        return false;
+    return n == 21 || sep(name[n - 22]);
+}
+
+// Writes the banner unless the file already holds it. Runs on the game's thread (not in DllMain).
+bool PrepareBanner() {
+    // flag 2 opens <output dir> + name (a full path when there is no output dir)
+    const uint8_t* od = *(const uint8_t* const*)(uintptr_t)g_outputDir;
+    std::string base = od ? std::string((const char*)(od + 0xC), *(const uint32_t*)(od + 8)) : std::string();
+    bool slash = base.empty() || base.back() == '\\' || base.back() == '/';
+    std::string dir = (base.empty() ? std::string(g_gameDir) : base + (slash ? "" : "\\")) + "SteamNet";
+    g_bannerFile = dir + "\\Banner.tex";
+    g_bannerOpen = base.empty() ? g_bannerFile : std::string(slash ? "" : "\\") + "SteamNet\\Banner.tex";
+    CreateDirectoryA(dir.c_str(), nullptr);
+    HANDLE f = CreateFileA(g_bannerFile.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f != INVALID_HANDLE_VALUE) {
+        std::vector<uint8_t> have(g_bannerSize + 1);
+        DWORD got = 0;
+        bool same = ReadFile(f, have.data(), (DWORD)have.size(), &got, nullptr) && got == g_bannerSize &&
+                    memcmp(have.data(), g_bannerTex, g_bannerSize) == 0;
+        CloseHandle(f);
+        if (same) return true;
+    }
+    f = CreateFileA(g_bannerFile.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD put = 0;
+    bool ok = WriteFile(f, g_bannerTex, (DWORD)g_bannerSize, &put, nullptr) && put == g_bannerSize;
+    CloseHandle(f);
+    return ok;
+}
+
+int __fastcall HookFileOpen(void* file, void* edx, const char* name, unsigned flags) {
+    if (g_bannerState >= 0 && !(flags & 2) && IsBannerName(name)) {
+        if (g_bannerState == 0) {
+            bool ok = PrepareBanner();
+            if (!ok) Log("steamnet: lobby banner: cannot write %s (%lu)", g_bannerFile.c_str(), GetLastError());
+            InterlockedExchange(&g_bannerState, ok ? 1 : -1);
+        }
+        if (g_bannerState == 1) {
+            int r = g_fileOpen(file, edx, g_bannerOpen.c_str(), flags | 2);
+            static LONG logged;
+            if (!InterlockedExchange(&logged, 1))
+                Log("steamnet: lobby banner \"%s\" -> %s: %s", name, g_bannerFile.c_str(), r ? "ok" : "failed, EarthNet's stays");
+            if (r) return r;
+        }
+    }
+    return g_fileOpen(file, edx, name, flags);
+}
+
+bool InstallBannerHook() {
+    static const uint8_t kPrologue[6] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x28}; // push ebp; mov ebp, esp; sub esp, 28h
+    static const uint8_t kMovEax = 0xA1;                                     // mov eax, [output dir] at +0x8B
+    if (!A.fileOpen || !g_bannerTex || !Match(A.fileOpen, kPrologue, sizeof(kPrologue)) ||
+        !Match(A.fileOpen + 0x8B, &kMovEax, 1))
+        return false;
+    g_outputDir = G<uint32_t>(A.fileOpen + 0x8C);
+    auto* t = (uint8_t*)VirtualAlloc(nullptr, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    if (!t) return false;
+    memcpy(t, kPrologue, sizeof(kPrologue)); // the replaced instructions, then on to the rest
+    t[6] = 0xE9;
+    int32_t rel = (int32_t)(A.fileOpen + 6 - ((uint32_t)(uintptr_t)t + 11));
+    memcpy(t + 7, &rel, 4);
+    g_fileOpen = (FileOpenFn)(void*)t;
+    return WriteRel32(A.fileOpen, 0xE9, (void*)&HookFileOpen, 1);
+}
+
 HANDLE WINAPI HookGetHostByName(HWND wnd, u_int msg, const char* name, char* buf, int buflen) {
     if (IsOurHost(name) && EnsureServer()) {
         CaptureClient(buf);
@@ -533,12 +620,14 @@ void SteamNet_LoadConfig(const char* ini, SteamNetSettings& s) {
     s.ranking = GetPrivateProfileIntA("SteamNet", "Ranking", 1, ini) != 0;
     s.steamLogin = GetPrivateProfileIntA("SteamNet", "SteamLogin", 1, ini) != 0;
     s.online = GetPrivateProfileIntA("SteamNet", "Online", 1, ini) != 0;
+    s.banner = GetPrivateProfileIntA("SteamNet", "Banner", 1, ini) != 0;
 }
 
 void SteamNet_SetRanking(en::RankingService* r) { g_ranking = r; }
 void SteamNet_SetLobbies(en::LobbyService* l) { g_lobbies = l; }
 void SteamNet_SetAccount(SteamNetAccount (*account)()) { g_accountFn = account; }
 void SteamNet_SetMatchPeople(bool (*people)(int&, int&)) { g_matchPeople = people; }
+void SteamNet_SetBanner(const void* tex, size_t size) { g_bannerTex = tex, g_bannerSize = size; }
 
 bool SteamNet_Install(const SteamNetSettings& s, const SteamNetGameAddrs& game) {
     S = s;
@@ -550,6 +639,8 @@ bool SteamNet_Install(const SteamNetSettings& s, const SteamNetGameAddrs& game) 
 
     bool renamed = Rename();
     Log("steamnet: menu entry \"%s\": %s", Narrow(S.name).c_str(), renamed ? "ok" : "signature mismatch");
+    if (S.banner && A.fileOpen)
+        Log("steamnet: lobby banner: %s", !g_bannerTex ? "missing from the DLL" : InstallBannerHook() ? "ok" : "signature mismatch");
     if (A.resultSetter)
         Log("steamnet: match results: %s", InstallResultHook() ? "ok" : "signature mismatch");
     void** slot = FindImport(GetModuleHandleA(nullptr), "kernel32.dll", "GetProcAddress");
