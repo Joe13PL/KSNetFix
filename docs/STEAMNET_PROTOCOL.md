@@ -207,7 +207,7 @@ kilku graczy dostaje ` #2`. Wyjście gracza z kanału usuwa jego grę (`&play`).
 `/playc "<guid gry>" "<nazwa>" "<hasło>"` i zapamiętuje IPv4 gry (`+0x4A48`). Odpowiedź
 `/playc "<guid>" "<nazwa>" 1 <ipv4>` → `+0xE8(0, ipv4)` (`0x823E10`) → `0x82E920(nazwa, …, ipv4)` →
 `0x84C500` / `0x84BBB0` z adresem `"%d.%d.%d.%d"` jako nazwą hosta DirectPlay. Trzecie słowo `0` →
-`+0xE8(2)` „złe hasło”. Transport Steam (`ParseSteamTarget`) zamienia adres `10.83.x.y` na lobby gry i łączy
+`+0xE8(2)` „złe hasło”. Zerowy GUID w odpowiedzi → `+0xE8(1)` „Gra nie istnieje” (porównanie z `GUID_NULL`, ex2 `FUN_005a4f90`); klient potrafi wysłać zerowy GUID w zapytaniu, więc serwer odpowiada GUID-em gry, który sam zna (gdy go brak: niezerowy z adresu gry). Transport Steam (`ParseSteamTarget`) zamienia adres `10.83.x.y` na lobby gry i łączy
 jak z `ks-lobby:<id>`.
 
 ### Wyniki meczów

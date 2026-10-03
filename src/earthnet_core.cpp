@@ -592,6 +592,8 @@ void Session::GameUpdated(const std::string& name, int players, int maxPlayers, 
 }
 void Session::GameRemoved(const std::string& name) { Line("&play " + Quote(name)); }
 void Session::JoinReply(const std::string& guid, const std::string& name, bool ok, uint32_t ipv4) {
+    Log("join reply \"%s\": %s %s %u.%u.%u.%u", name.c_str(), ok ? "ok" : "no such game", guid.c_str(), ipv4 & 0xff,
+        ipv4 >> 8 & 0xff, ipv4 >> 16 & 0xff, ipv4 >> 24);
     char buf[32];
     snprintf(buf, sizeof(buf), ok ? " 1 %u" : " 0", ipv4);
     Line("/playc " + Quote(guid) + " " + Quote(name) + buf);
@@ -949,7 +951,9 @@ void OnlineBackend::OnJoinGame(Session& s, const std::string& guid, const std::s
         s.JoinReply(guid, name, false, 0);
         return;
     }
-    s.JoinReply(guid, name, true, it->second.ipv4);
+    // The client checks only that the reply's GUID is not zero (zero: "game does not exist",
+    // 0x81xxxx +0xE8(1)) and joins the address; its own request may carry a zero GUID.
+    s.JoinReply(it->second.guid, name, true, it->second.ipv4);
 }
 
 void OnlineBackend::Poll(Session& s) {
@@ -1036,8 +1040,14 @@ void OnlineBackend::Apply(Session& s, const LobbyEvent& e) {
         std::string name = e.text.empty() ? "Gra" : e.text, n = name;
         for (int k = 2; remote_.count(n) || std::find(games_.begin(), games_.end(), n) != games_.end(); k++)
             n = name + " #" + std::to_string(k);
-        remote_[n] = Game{e.member.id, e.guid, e.ipv4};
-        s.GameAdded(n, e.ipv4, e.guid);
+        std::string guid = e.guid;
+        if (guid.size() != 36 || guid == kNullGuid) { // never zero: a zero GUID means "no such game"
+            char g[40];
+            snprintf(g, sizeof(g), "534e4554-0000-0000-0000-%012x", (unsigned)e.ipv4);
+            guid = g;
+        }
+        remote_[n] = Game{e.member.id, guid, e.ipv4};
+        s.GameAdded(n, e.ipv4, guid);
         Stats(s);
         break;
     }

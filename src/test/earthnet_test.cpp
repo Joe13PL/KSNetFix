@@ -743,13 +743,23 @@ static void TestOnline() {
     CHECK(has("$play \"RTS : mapa #2\" 0 0 33641226 \"00000000-0000-0000-0000-000000000011\""));
     CHECK(has("/syncstats 4 4 2 0 2 0 0"));
     c.lines.clear();
-    l = "/playc \"04030201-0605-0807-090a-0b0c0d0e0f10\" \"RTS : mapa\" \"\"";
+    l = "/playc \"00000000-0000-0000-0000-000000000000\" \"RTS : mapa\" \"\""; // the client may send zeros
     l.push_back('\0');
     l += "/playc \"00000000-0000-0000-0000-000000000099\" \"Nie ma\" \"\"";
     l.push_back('\0');
     CHECK(s.OnData((const uint8_t*)l.data(), l.size()));
     c.TakeLines();
     CHECK(has("/playc \"04030201-0605-0807-090a-0b0c0d0e0f10\" \"RTS : mapa\" 1 16864010"));
+    // a game published without a GUID still gets a non-zero one (zero = "game does not exist")
+    en::LobbyEvent noGuid;
+    noGuid.kind = en::LobbyEvent::GAME_ADDED;
+    noGuid.member.id = 12;
+    noGuid.text = "RPG : bez guid";
+    noGuid.ipv4 = 0x0301530a;
+    lobbies.events->Push(noGuid);
+    s.Poll();
+    c.TakeLines();
+    CHECK(has("$play \"RPG : bez guid\" 0 0 50418442 \"534e4554-0000-0000-0000-00000301530a\""));
     CHECK(has("/playc \"00000000-0000-0000-0000-000000000099\" \"Nie ma\" 0") && has("&play \"Nie ma\""));
     c.lines.clear();
     lobbies.Push(en::LobbyEvent::GAME_REMOVED, 14);
