@@ -242,7 +242,8 @@ pisać cudzych) na trzech tablicach: ogólnej, miesięcznej i tygodniowej; wysy�
 
 Nad czatem lobby (`0x82B990`, kontrolka `0x566`) gra pokazuje `Banners\BannerDef.tex` z `Interface.wd`: logo
 EarthNet, 640×128, pięć tekstur 128×128 (`TEX\0`, wersja 2, flagi `0x03000002`, `0x8888`, piksele w kolejności
-R, G, B, A). Banery przysłane przez serwer EarthNet trafiały do `Banners\????????.tex` (lista GUID-ów w kliencie,
+R, G, B, A; z przezroczystością flagi `0x03000022`, jak ramki okien w `Interface.wd`). Baner SteamNet jest przezroczysty
+wokół szyldu. Banery przysłane przez serwer EarthNet trafiały do `Banners\????????.tex` (lista GUID-ów w kliencie,
 `0x7FCED0`); SteamNet ich nie wysyła, więc zostaje domyślny. Każdy plik gra otwiera przez `0x799BC0` (ex2 `0x79C880`,
 `__thiscall(plik, nazwa, flagi)`): nazwa jest szukana w archiwach i folderze gry (`0x79B930`), potem `0x798E40`
 (ex2 `0x79BB00`, `__thiscall(plik, ścieżka, flagi, offset, rozmiar)`, wywołania pod `+0xC0` i `+0x19C`) otwiera ją —
