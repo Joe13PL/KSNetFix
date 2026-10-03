@@ -255,8 +255,9 @@ void ApplyResult(int& score, std::vector<int32_t>& details, const ResultChange& 
 
 // How a finished match counts. The game sends /play0 for SteamNet matches (it rates only EarthNet
 // ones), so the result comes from what it set (start = the report when the match began):
-// victory -> win, defeat -> loss; every opponent gone -> win (the last one in the match);
-// left through the menu with opponents still playing -> the disconnect stays; otherwise nothing.
+// victory -> win, defeat -> loss (also when the defeated player quits afterwards); every opponent
+// gone -> win (the last one in the match); left through the menu with opponents still playing ->
+// the disconnect stays; otherwise nothing.
 enum MatchVerdict { VERDICT_WIN, VERDICT_LOSS, VERDICT_DISCONNECT, VERDICT_NONE };
 MatchVerdict JudgeMatch(GameResult sent, const MatchReport& start, const MatchReport& end, std::string* why = nullptr);
 
@@ -277,6 +278,7 @@ class RankedBackend : public LocalBackend {
     std::function<int64_t()> now_;
     bool matchWasRunning_ = false, provisional_ = false; // a disconnect is on the boards for this match
     MatchReport start_; // the report when the match began
+    bool inMatch_ = false; // a match began and has no verdict yet
 };
 
 class MemoryStore : public PlayerStore {

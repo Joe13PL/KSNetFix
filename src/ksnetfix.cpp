@@ -30,7 +30,7 @@
 
 #pragma comment(lib, "winmm.lib")
 
-#define KSNETFIX_VERSION "2.6.3"
+#define KSNETFIX_VERSION "2.6.4"
 
 // ---------------------------------------------------------------------------
 // Per-build addresses (all verified by signature before use)
@@ -1205,11 +1205,13 @@ static void Install() {
         if (A == &kEx1)
             g.client = 0x00F625B0, g.clientVtable = 0x008FABA0, g.lookupBuffer = 0x4AB0, g.memAlloc = 0x007971D0,
             g.loginGlobal = 0x00A58F08, g.matchFlag = 0x00F62588,
-            g.resultSetter = 0x0082E840, g.resultGlobal = 0x00F6258C, g.quitCall = 0x0041ED4A;
+            g.resultSetter = 0x0082E840, g.resultGlobal = 0x00F6258C, g.quitCall = 0x0041ED4A,
+            g.defeatCall = 0x0062CEC9, g.victoryCalls[0] = 0x0062D0B1, g.victoryCalls[1] = 0x0062D0BF;
         else // ex2: same code, other addresses (connect 0x802470, result 0x82FA90)
             g.client = 0x0152DAF0, g.clientVtable = 0x00901DB8, g.lookupBuffer = 0x4AB0, g.memAlloc = 0x00799E90,
             g.loginGlobal = 0x00A67958, g.matchFlag = 0x0152DAC8,
-            g.resultSetter = 0x008313E0, g.resultGlobal = 0x0152DACC, g.quitCall = 0x0041EFBA;
+            g.resultSetter = 0x008313E0, g.resultGlobal = 0x0152DACC, g.quitCall = 0x0041EFBA,
+            g.defeatCall = 0x0062DF49, g.victoryCalls[0] = 0x0062E131, g.victoryCalls[1] = 0x0062E13F;
         Log("steamnet (EarthNet -> local server%s): %s", A == &kEx1 ? "" : ", D3D8 shaders build",
             SteamNet_Install(cfg.steamNet, g) ? "ok" : "FAILED");
         bool ranking = cfg.steamNet.ranking && cfg.steam.enabled && !cfg.steam.gameServer;

@@ -928,8 +928,13 @@ static void TestResults() {
     play([&] { report.outcomes.push_back(en::MatchReport::VICTORY); });
     r = entry("SteamNet");
     CHECK(r.wins == 2 && r.losses == 1 && r.disconnects == 1 && r.points == 5);
-    // match 6: defeat, then left through the menu after the end (the game sets nothing more)
-    play([&] { report.outcomes.push_back(en::MatchReport::DEFEAT); });
+    // match 6: defeat, then quit through the menu (the match goes on for the others), and the
+    // client sends /play0 once more on the way back to the lobby
+    play([&] {
+        report.outcomes.push_back(en::MatchReport::DEFEAT);
+        report.outcomes.push_back(en::MatchReport::QUIT);
+    });
+    send2("/play0 \"g\" \"RTS : mapa\" \"\" \"g\"");
     r = entry("SteamNet");
     CHECK(r.wins == 2 && r.losses == 2 && r.disconnects == 1 && r.points == 5);
     // match 7: left through the menu while the opponent plays on - the disconnect stays
@@ -972,6 +977,10 @@ static void TestResults() {
     CHECK(en::JudgeMatch(en::RESULT_NONE, a, b) == en::VERDICT_LOSS);
     b.outcomes.push_back(en::MatchReport::UNRATED); // another player's end does not undo it
     CHECK(en::JudgeMatch(en::RESULT_NONE, a, b) == en::VERDICT_LOSS);
+    en::MatchReport alone;
+    alone.opponents = 0;
+    b.outcomes = {en::MatchReport::VICTORY};
+    CHECK(en::JudgeMatch(en::RESULT_NONE, alone, b) == en::VERDICT_NONE); // nobody to beat
     a.outcomes = b.outcomes; // only what was set since the match began counts
     b.outcomes.push_back(en::MatchReport::VICTORY);
     CHECK(en::JudgeMatch(en::RESULT_NONE, a, b, &why) == en::VERDICT_WIN && why == "victory");

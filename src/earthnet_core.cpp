@@ -815,17 +815,20 @@ MatchVerdict JudgeMatch(GameResult sent, const MatchReport& start, const MatchRe
     };
     if (sent == RESULT_WIN) return verdict(VERDICT_WIN, "the game sent a win");
     if (sent == RESULT_LOSS) return verdict(VERDICT_LOSS, "the game sent a loss");
-    // the last result the game set in this match counts, as it would have for /playv and /playd;
-    // "not rated" only when there is nothing else (it may come for another player's end)
+    // The player's victory or defeat in this match is final: a defeated player may still quit
+    // through the menu (the match goes on for the others), a winner's quit sets nothing.
     size_t first = start.outcomes.size() <= end.outcomes.size() ? start.outcomes.size() : 0;
-    bool set = end.outcomes.size() > first;
-    MatchReport::Outcome last = MatchReport::UNRATED;
-    for (size_t i = first; i < end.outcomes.size(); i++)
-        if (end.outcomes[i] != MatchReport::UNRATED) last = end.outcomes[i];
-    if (last == MatchReport::VICTORY) return verdict(VERDICT_WIN, "victory");
-    if (last == MatchReport::DEFEAT) return verdict(VERDICT_LOSS, "defeat");
+    bool set = end.outcomes.size() > first, quit = false;
+    for (size_t i = first; i < end.outcomes.size(); i++) {
+        MatchReport::Outcome o = end.outcomes[i];
+        if (o == MatchReport::VICTORY)
+            return start.opponents == 0 ? verdict(VERDICT_NONE, "victory without other players")
+                                        : verdict(VERDICT_WIN, "victory");
+        if (o == MatchReport::DEFEAT) return verdict(VERDICT_LOSS, "defeat");
+        if (o == MatchReport::QUIT) quit = true;
+    }
     if (end.opponents == 0 && end.departed > start.departed) return verdict(VERDICT_WIN, "every opponent left");
-    if (last == MatchReport::QUIT) return verdict(VERDICT_DISCONNECT, "left the match through the menu");
+    if (quit) return verdict(VERDICT_DISCONNECT, "left the match through the menu");
     return verdict(VERDICT_NONE, set ? "not rated by the game" : "no result from the game");
 }
 
@@ -833,6 +836,7 @@ void RankedBackend::Poll(Session& s) {
     bool running = s.MatchRunning();
     if (running && !matchWasRunning_ && !provisional_) {
         start_ = s.Report();
+        inMatch_ = true;
         if (RpgGame(s.GameName())) {
             s.Log("match started \"%s\": RPG, not ranked", s.GameName().c_str());
         } else {
@@ -849,6 +853,11 @@ void RankedBackend::Poll(Session& s) {
 }
 
 void RankedBackend::OnGameResult(Session& s, GameResult r) {
+    if (!inMatch_ && r == RESULT_NONE) { // the client sends /play0 again after a quit from the menu
+        s.Log("match result again: already counted");
+        return;
+    }
+    inMatch_ = false;
     ResultChange c;
     if (provisional_) { // take the disconnect back
         c.disconnects = -1;

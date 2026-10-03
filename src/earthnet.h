@@ -30,6 +30,8 @@ struct SteamNetGameAddrs {
     uint32_t resultSetter = 0; // int __cdecl(int): the player's match result, 1 won / 0 lost / 2 not rated
     uint32_t resultGlobal = 0; // where it keeps the result (only for rated EarthNet matches)
     uint32_t quitCall = 0;     // its call from the in-game menu's "quit" (0: lost by leaving)
+    uint32_t defeatCall = 0;   // its call from the local player's defeat (2 outside rated matches)
+    uint32_t victoryCalls[2] = {0, 0}; // its calls from the local player's victory (2 outside rated matches)
 };
 
 // Renames the menu entry and hooks the game's winsock lookups. Call from DllMain.

@@ -427,15 +427,18 @@ void InstallSteamLogin() {
 
 // ---------------------------------------------------------------------------
 // Match results. The game keeps the player's result (0x82E840) only for rated EarthNet matches,
-// so SteamNet matches always end with /play0. The replacement keeps what the game decided:
-// victory (0x62CFA0) sets 1, defeat (0x62CE30) 0, both 2 when no human opponent was beaten,
-// and "quit" in the in-game menu (0x41EC80) 0 while the match still goes on.
+// so SteamNet matches always end with /play0. The replacement keeps what the game decided.
+// The value does not tell it in a SteamNet match: victory (0x62CFA0) and defeat (0x62CE30) of
+// the local player both set 2 there (1 / 0 only in rated matches), so the call site decides;
+// "quit" in the in-game menu (0x41EC80) sets 0 while the match still goes on.
 // ---------------------------------------------------------------------------
 int __cdecl ResultSetter(int result) {
     uint32_t from = (uint32_t)(uintptr_t)RETURN_ADDRESS();
-    en::MatchReport::Outcome o = result == 1 ? en::MatchReport::VICTORY
-                                 : result != 0 ? en::MatchReport::UNRATED
-                                 : from == A.quitCall + 5 ? en::MatchReport::QUIT : en::MatchReport::DEFEAT;
+    en::MatchReport::Outcome o = result == 1 ? en::MatchReport::VICTORY : result == 0 ? en::MatchReport::DEFEAT : en::MatchReport::UNRATED;
+    if (A.quitCall && from == A.quitCall + 5) o = en::MatchReport::QUIT;
+    else if (A.defeatCall && from == A.defeatCall + 5) o = en::MatchReport::DEFEAT;
+    else if ((A.victoryCalls[0] && from == A.victoryCalls[0] + 5) || (A.victoryCalls[1] && from == A.victoryCalls[1] + 5))
+        o = en::MatchReport::VICTORY;
     static const char* const names[] = {"victory", "defeat", "not rated", "quit"};
     Log("steamnet: the game set match result %d at %08X: %s", result, (unsigned)(from - 5), names[o]);
     EnterCriticalSection(&g_cs);
@@ -456,7 +459,11 @@ bool InstallResultHook() {
     memcpy(code + 4, &A.client, 4);
     memcpy(code + 25, &A.resultGlobal, 4);
     if (!Match(A.resultSetter, code, sizeof(code))) return false;
-    if (A.quitCall && !MatchCall(A.quitCall, A.resultSetter)) A.quitCall = 0;
+    for (uint32_t* site : {&A.quitCall, &A.defeatCall, &A.victoryCalls[0], &A.victoryCalls[1]})
+        if (*site && !MatchCall(*site, A.resultSetter)) {
+            Log("steamnet: match results: no call at %08X", (unsigned)*site);
+            *site = 0;
+        }
     return WriteRel32(A.resultSetter, 0xE9, (void*)&ResultSetter);
 }
 
@@ -544,7 +551,7 @@ bool SteamNet_Install(const SteamNetSettings& s, const SteamNetGameAddrs& game) 
     bool renamed = Rename();
     Log("steamnet: menu entry \"%s\": %s", Narrow(S.name).c_str(), renamed ? "ok" : "signature mismatch");
     if (A.resultSetter)
-        Log("steamnet: match results: %s", InstallResultHook() ? (A.quitCall ? "ok" : "ok (menu quit not found)") : "signature mismatch");
+        Log("steamnet: match results: %s", InstallResultHook() ? "ok" : "signature mismatch");
     void** slot = FindImport(GetModuleHandleA(nullptr), "kernel32.dll", "GetProcAddress");
     if (!slot) return false;
     g_realGetProcAddress = (GetProcAddressFn)*slot;

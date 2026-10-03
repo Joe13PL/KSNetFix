@@ -207,8 +207,8 @@ int main() {
     memcpy(g_globalClientObj, &kClientVtable, 4);
     *(uint32_t**)(g_clientObj + 0x4A80) = g_oldLogin;
 
-    // The game's result setter (0x82E840) and two callers: the in-game menu's quit (push 0) and
-    // a victory (push 1); each is "push x; call setter; add esp, 4; ret".
+    // The game's result setter (0x82E840) and its callers: the in-game menu's quit (push 0), a
+    // victory (push 1) and a defeat outside rated matches (push 2); "push x; call setter; add esp, 4; ret".
     static int32_t gameResult = -1;
     auto* code = (uint8_t*)VirtualAlloc(nullptr, 4096, MEM_COMMIT, PAGE_EXECUTE_READWRITE);
     const uint8_t setter[40] = {0x55, 0x8B, 0xEC, 0xA1, 0, 0, 0, 0, 0x85, 0xC0, 0x74, 0x18, 0x83, 0xB8, 0x98, 0x4A,
@@ -226,16 +226,22 @@ int main() {
         c[7] = 0x83, c[8] = 0xC4, c[9] = 0x04, c[10] = 0xC3;
         return (int(__cdecl*)())(void*)c;
     };
-    auto quit = caller(64, 0), victory = caller(96, 1);
+    auto quit = caller(64, 0), victory = caller(96, 1), defeat = caller(128, 2);
     addrs.resultSetter = (uint32_t)(uintptr_t)code;
     addrs.resultGlobal = resultGlobal;
     addrs.quitCall = (uint32_t)(uintptr_t)code + 64 + 2;
+    addrs.defeatCall = (uint32_t)(uintptr_t)code + 128 + 2;
+    addrs.victoryCalls[0] = (uint32_t)(uintptr_t)code + 96 + 2;
+    addrs.victoryCalls[1] = (uint32_t)(uintptr_t)code + 200; // no call there: dropped
     CHECK(SteamNet_Install(st, addrs));
     CHECK(Logged("steamnet: match results: ok"));
     // a SteamNet match (client+0x4A98 = -1): the game keeps nothing, SteamNet still learns the result
     *(int32_t*)(g_globalClientObj + 0x4A98) = -1;
     quit();
     CHECK(gameResult == -1 && Logged("match result 0 at") && Logged(": quit"));
+    defeat(); // 2 = "not rated", but it comes from the defeat
+    CHECK(gameResult == -1 && Logged("match result 2 at") && Logged(": defeat"));
+    CHECK(Logged("match results: no call at"));
     // a rated EarthNet match: kept as before
     *(int32_t*)(g_globalClientObj + 0x4A98) = 7;
     victory();
