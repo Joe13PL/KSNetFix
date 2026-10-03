@@ -55,6 +55,5 @@ void SteamNet_SetAccount(SteamNetAccount (*account)());
 // left or dropped since it began; false when unknown. Decides the win of the last one in a match.
 void SteamNet_SetMatchPeople(bool (*people)(int& opponents, int& departed));
 // The lobby banner served instead of Banners\BannerDef.tex (the game's texture format, 640x128);
-// written to SteamNet\Banner.tex in the game's output dir (the game folder) when the lobby first
-// shows it. Call before the install.
+// written to <game>\SteamNet\Banner.tex when the lobby first shows it. Call before the install.
 void SteamNet_SetBanner(const void* tex, size_t size);

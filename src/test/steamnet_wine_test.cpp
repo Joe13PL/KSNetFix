@@ -229,33 +229,47 @@ int main() {
     auto quit = caller(64, 0), victory = caller(96, 1), defeat = caller(128, 2);
 
     // The game's file open (0x799BC0, __thiscall file, name, flags): the same prologue, then it
-    // keeps the name and flags it got; the output dir global is read at +0x8B.
+    // keeps the name and flags it got. Never run: its calls of the loose-file open (0x798E40,
+    // __thiscall file, path, flags, offset, size) at +0xC0 / +0x19C and "+0x3C = +0x20" at +0x1E7.
     static const char* openedName;
     static unsigned openedFlags;
-    static char outputDirName[MAX_PATH];
-    static uint8_t outputDir[12 + MAX_PATH];
-    static uint8_t* outputDirPtr = outputDir;
+    static const char* rawPath;
+    static int32_t rawArgs[3]; // flags, offset, size
     uint8_t* fo = code + 512;
     const uint8_t prologue[6] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x28};
     memcpy(fo, prologue, 6);
     uint32_t pName = (uint32_t)(uintptr_t)&openedName, pFlags = (uint32_t)(uintptr_t)&openedFlags;
     uint8_t foBody[] = {0x8B, 0x45, 0x08, 0xA3, 0, 0, 0, 0, 0x8B, 0x45, 0x0C, 0xA3, 0, 0, 0, 0, // keep name, flags
-                      0xB8, 0x01, 0x00, 0x00, 0x00, 0x8B, 0xE5, 0x5D, 0xC2, 0x08, 0x00};     // return 1 (ret 8)
+                        0xB8, 0x01, 0x00, 0x00, 0x00, 0x8B, 0xE5, 0x5D, 0xC2, 0x08, 0x00};   // return 1 (ret 8)
     memcpy(foBody + 4, &pName, 4);
     memcpy(foBody + 12, &pFlags, 4);
     memcpy(fo + 6, foBody, sizeof(foBody));
-    fo[0x8B] = 0xA1;
-    uint32_t pDir = (uint32_t)(uintptr_t)&outputDirPtr;
-    memcpy(fo + 0x8C, &pDir, 4);
+    // the loose-file open: keeps its arguments, file+0x20 = 1234 (the size), returns 1 (ret 10h)
+    uint8_t* raw = code + 1024;
+    uint32_t pRaw = (uint32_t)(uintptr_t)&rawPath, pArgs = (uint32_t)(uintptr_t)rawArgs;
+    uint8_t rawBody[] = {0x8B, 0x44, 0x24, 0x04, 0xA3, 0, 0, 0, 0,       // mov eax, [esp+4]; mov [rawPath], eax
+                         0x8B, 0x44, 0x24, 0x08, 0xA3, 0, 0, 0, 0,       // flags
+                         0x8B, 0x44, 0x24, 0x0C, 0xA3, 0, 0, 0, 0,       // offset
+                         0x8B, 0x44, 0x24, 0x10, 0xA3, 0, 0, 0, 0,       // size
+                         0xC7, 0x41, 0x20, 0xD2, 0x04, 0x00, 0x00,       // mov dword [ecx+20h], 1234
+                         0xB8, 0x01, 0x00, 0x00, 0x00, 0xC2, 0x10, 0x00}; // return 1
+    memcpy(rawBody + 5, &pRaw, 4);
+    for (int i = 0; i < 3; i++) {
+        uint32_t a = pArgs + 4 * i;
+        memcpy(rawBody + 14 + 9 * i, &a, 4);
+    }
+    memcpy(raw, rawBody, sizeof(rawBody));
+    for (int site : {0xC0, 0x19C}) {
+        fo[site] = 0xE8;
+        int32_t rel = (int32_t)((uint32_t)(uintptr_t)raw - ((uint32_t)(uintptr_t)fo + site + 5));
+        memcpy(fo + site + 1, &rel, 4);
+    }
+    const uint8_t keepSize[6] = {0x8B, 0x4E, 0x20, 0x89, 0x4E, 0x3C};
+    memcpy(fo + 0x1E7, keepSize, 6);
     typedef int(__fastcall * OpenFn)(void*, void*, const char*, unsigned);
     auto open = (OpenFn)(void*)fo;
     addrs.fileOpen = (uint32_t)(uintptr_t)fo;
-    // output dir: the test's folder without the trailing backslash (refcount, capacity, length, text)
-    GetModuleFileNameA(nullptr, outputDirName, MAX_PATH);
-    *strrchr(outputDirName, '\\') = 0;
-    uint32_t odHead[3] = {1, MAX_PATH, (uint32_t)strlen(outputDirName)};
-    memcpy(outputDir, odHead, 12);
-    strcpy((char*)outputDir + 12, outputDirName);
+    static uint8_t gameFile[0x60];
     static const uint8_t bannerTex[] = {'T', 'E', 'X', 0, 2, 0, 0, 0};
     SteamNet_SetBanner(bannerTex, sizeof(bannerTex));
     addrs.resultSetter = (uint32_t)(uintptr_t)code;
@@ -268,19 +282,26 @@ int main() {
     CHECK(Logged("steamnet: match results: ok"));
     CHECK(Logged("steamnet: lobby banner: ok"));
     // other files go through as they are
-    CHECK(open(nullptr, nullptr, "Interface\\Bkg0000.tex", 1) == 1 && strcmp(openedName, "Interface\\Bkg0000.tex") == 0 &&
-          openedFlags == 1);
-    // the banner: SteamNet\Banner.tex after the output dir, opened from disk (flag 2)
-    CHECK(open(nullptr, nullptr, "Banners\\BannerDef.tex", 1) == 1);
-    CHECK(strcmp(openedName, "\\SteamNet\\Banner.tex") == 0 && openedFlags == 3);
-    std::string bannerFile = std::string(outputDirName) + "\\SteamNet\\Banner.tex";
+    CHECK(open(gameFile, nullptr, "Interface\\Bkg0000.tex", 1) == 1 && strcmp(openedName, "Interface\\Bkg0000.tex") == 0 &&
+          openedFlags == 1 && !rawPath);
+    // the banner: <game>\SteamNet\Banner.tex opened as a loose file (offset 0, size -1), size kept
+    char gameDir[MAX_PATH];
+    GetModuleFileNameA(nullptr, gameDir, MAX_PATH);
+    strrchr(gameDir, '\\')[1] = 0;
+    std::string bannerFile = std::string(gameDir) + "SteamNet\\Banner.tex";
+    CHECK(open(gameFile, nullptr, "Banners\\BannerDef.tex", 1) == 1);
+    CHECK(rawPath && bannerFile == rawPath && rawArgs[0] == 1 && rawArgs[1] == 0 && rawArgs[2] == -1);
+    CHECK(*(uint32_t*)(gameFile + 0x3C) == 1234);
     CHECK(Logged("lobby banner \"Banners\\BannerDef.tex\" -> " + bannerFile + ": ok"));
     char written[16] = {0};
     FILE* bf = fopen(bannerFile.c_str(), "rb");
     CHECK(bf && fread(written, 1, sizeof(written), bf) == sizeof(bannerTex) && memcmp(written, bannerTex, sizeof(bannerTex)) == 0);
     if (bf) fclose(bf);
-    CHECK(open(nullptr, nullptr, "banners/BANNERDEF.TEX", 1) == 1 && openedFlags == 3); // any case, either slash
-    CHECK(open(nullptr, nullptr, "Banners\\MyBannerDef.tex", 1) == 1 && openedFlags == 1);
+    rawPath = nullptr;
+    CHECK(open(gameFile, nullptr, "banners/BANNERDEF.TEX", 1) == 1 && rawPath); // any case, either slash
+    rawPath = nullptr;
+    CHECK(open(gameFile, nullptr, "Banners\\MyBannerDef.tex", 1) == 1 && !rawPath && openedFlags == 1);
+    CHECK(open(gameFile, nullptr, "Banners\\BannerDef.tex", 3) == 1 && !rawPath && openedFlags == 3); // writing
     // a SteamNet match (client+0x4A98 = -1): the game keeps nothing, SteamNet still learns the result
     *(int32_t*)(g_globalClientObj + 0x4A98) = -1;
     quit();

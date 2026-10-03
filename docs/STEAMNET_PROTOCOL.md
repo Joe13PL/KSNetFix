@@ -244,10 +244,12 @@ Nad czatem lobby (`0x82B990`, kontrolka `0x566`) gra pokazuje `Banners\BannerDef
 EarthNet, 640×128, pięć tekstur 128×128 (`TEX\0`, wersja 2, flagi `0x03000002`, `0x8888`, piksele w kolejności
 R, G, B, A). Banery przysłane przez serwer EarthNet trafiały do `Banners\????????.tex` (lista GUID-ów w kliencie,
 `0x7FCED0`); SteamNet ich nie wysyła, więc zostaje domyślny. Każdy plik gra otwiera przez `0x799BC0` (ex2 `0x79C880`,
-`__thiscall(plik, nazwa, flagi)`): nazwa jest szukana w archiwach i folderze gry, flaga 2 otwiera `<katalog
-wyjściowy> + nazwa` z dysku (katalog wyjściowy: globalna czytana pod `+0x8B`, zwykle folder gry). KSNetFix
-podmienia tylko tę jedną nazwę na `SteamNet\Banner.tex` w katalogu wyjściowym, zapisany z zasobu DLL
-(`src/res/steamnet_banner.tex`, z PNG przez `tools/banner_tex.py`).
+`__thiscall(plik, nazwa, flagi)`): nazwa jest szukana w archiwach i folderze gry (`0x79B930`), potem `0x798E40`
+(ex2 `0x79BB00`, `__thiscall(plik, ścieżka, flagi, offset, rozmiar)`, wywołania pod `+0xC0` i `+0x19C`) otwiera ją —
+luźny plik z offsetem 0 i rozmiarem -1, po czym rozmiar zostaje zapamiętany (`+0x3C = +0x20`, kod pod `+0x1E7`).
+Flaga 2 to **zapis** (`CREATE_ALWAYS` do `<katalog wyjściowy> + nazwa`) — 2.6.5 otwierało nią baner i gra zerowała
+plik (czerwony prostokąt zamiast tekstury). KSNetFix otwiera tak `<gra>\SteamNet\Banner.tex` w miejsce tej jednej
+nazwy; plik zapisuje z zasobu DLL (`src/res/steamnet_banner.tex`, z PNG przez `tools/banner_tex.py`).
 
 ### Komendy klienta
 

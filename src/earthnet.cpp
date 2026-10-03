@@ -472,15 +472,16 @@ bool InstallResultHook() {
 // ---------------------------------------------------------------------------
 // Lobby banner. The lobby (0x82B990) shows Banners\BannerDef.tex from Interface.wd (EarthNet's logo,
 // 640x128) unless the server sent banners of its own. Every game file is opened by 0x799BC0
-// (__thiscall file, name, flags): names are looked up in the archives and the game folder, flag 2
-// opens <output dir> + name on disk instead (the output dir: the global read at +0x8B, usually the
-// game folder). The hook sends that one name to SteamNet\Banner.tex in the output dir.
+// (__thiscall file, name, flags): the name is looked up in the archives and the game folder, then
+// 0x798E40 (__thiscall file, path, flags, offset, size) opens it - a loose file with offset 0 and
+// size -1, after which the size is kept (+0x3C = +0x20). Flag 2 means writing (CREATE_ALWAYS).
+// The hook opens <game>\SteamNet\Banner.tex that way for that one name.
 // ---------------------------------------------------------------------------
 typedef int(__fastcall* FileOpenFn)(void* file, void* edx, const char* name, unsigned flags);
+typedef int(__fastcall* RawOpenFn)(void* file, void* edx, const char* path, unsigned flags, int offset, int size);
 FileOpenFn g_fileOpen;        // the original (trampoline)
-uint32_t g_outputDir;         // the game's output dir: pointer to its string (+8 length, +0xC text)
-std::string g_bannerFile;     // the banner on disk, and the name the game opens it by (flag 2)
-std::string g_bannerOpen;
+RawOpenFn g_rawOpen;          // opens a file on disk (0x798E40)
+std::string g_bannerFile;     // the banner on disk
 LONG g_bannerState;           // 0 not yet, 1 ready, -1 failed
 
 bool IsBannerName(const char* name) { // [...\]Banners\BannerDef.tex, any case, \ or /
@@ -494,13 +495,8 @@ bool IsBannerName(const char* name) { // [...\]Banners\BannerDef.tex, any case, 
 
 // Writes the banner unless the file already holds it. Runs on the game's thread (not in DllMain).
 bool PrepareBanner() {
-    // flag 2 opens <output dir> + name (a full path when there is no output dir)
-    const uint8_t* od = *(const uint8_t* const*)(uintptr_t)g_outputDir;
-    std::string base = od ? std::string((const char*)(od + 0xC), *(const uint32_t*)(od + 8)) : std::string();
-    bool slash = base.empty() || base.back() == '\\' || base.back() == '/';
-    std::string dir = (base.empty() ? std::string(g_gameDir) : base + (slash ? "" : "\\")) + "SteamNet";
+    std::string dir = std::string(g_gameDir) + "SteamNet";
     g_bannerFile = dir + "\\Banner.tex";
-    g_bannerOpen = base.empty() ? g_bannerFile : std::string(slash ? "" : "\\") + "SteamNet\\Banner.tex";
     CreateDirectoryA(dir.c_str(), nullptr);
     HANDLE f = CreateFileA(g_bannerFile.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     if (f != INVALID_HANDLE_VALUE) {
@@ -527,7 +523,8 @@ int __fastcall HookFileOpen(void* file, void* edx, const char* name, unsigned fl
             InterlockedExchange(&g_bannerState, ok ? 1 : -1);
         }
         if (g_bannerState == 1) {
-            int r = g_fileOpen(file, edx, g_bannerOpen.c_str(), flags | 2);
+            int r = g_rawOpen(file, edx, g_bannerFile.c_str(), flags, 0, -1);
+            if (r) *(uint32_t*)((uint8_t*)file + 0x3C) = *(uint32_t*)((uint8_t*)file + 0x20);
             static LONG logged;
             if (!InterlockedExchange(&logged, 1))
                 Log("steamnet: lobby banner \"%s\" -> %s: %s", name, g_bannerFile.c_str(), r ? "ok" : "failed, EarthNet's stays");
@@ -537,21 +534,25 @@ int __fastcall HookFileOpen(void* file, void* edx, const char* name, unsigned fl
     return g_fileOpen(file, edx, name, flags);
 }
 
+uint32_t CallTarget(uint32_t site) { return site + 5 + G<uint32_t>(site + 1); }
+
 bool InstallBannerHook() {
     static const uint8_t kPrologue[6] = {0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x28}; // push ebp; mov ebp, esp; sub esp, 28h
-    static const uint8_t kMovEax = 0xA1;                                     // mov eax, [output dir] at +0x8B
-    if (!A.fileOpen || !g_bannerTex || !Match(A.fileOpen, kPrologue, sizeof(kPrologue)) ||
-        !Match(A.fileOpen + 0x8B, &kMovEax, 1))
+    static const uint8_t kKeepSize[6] = {0x8B, 0x4E, 0x20, 0x89, 0x4E, 0x3C}; // mov ecx, [esi+20h]; mov [esi+3Ch], ecx
+    static const uint8_t kCall = 0xE8;
+    uint32_t f = A.fileOpen;
+    if (!f || !g_bannerTex || !Match(f, kPrologue, sizeof(kPrologue)) || !Match(f + 0x1E7, kKeepSize, sizeof(kKeepSize)) ||
+        !Match(f + 0x19C, &kCall, 1) || !MatchCall(f + 0xC0, CallTarget(f + 0x19C)))
         return false;
-    g_outputDir = G<uint32_t>(A.fileOpen + 0x8C);
+    g_rawOpen = (RawOpenFn)(void*)(uintptr_t)CallTarget(f + 0x19C); // the loose-file open after the lookup
     auto* t = (uint8_t*)VirtualAlloc(nullptr, 16, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!t) return false;
     memcpy(t, kPrologue, sizeof(kPrologue)); // the replaced instructions, then on to the rest
     t[6] = 0xE9;
-    int32_t rel = (int32_t)(A.fileOpen + 6 - ((uint32_t)(uintptr_t)t + 11));
+    int32_t rel = (int32_t)(f + 6 - ((uint32_t)(uintptr_t)t + 11));
     memcpy(t + 7, &rel, 4);
     g_fileOpen = (FileOpenFn)(void*)t;
-    return WriteRel32(A.fileOpen, 0xE9, (void*)&HookFileOpen, 1);
+    return WriteRel32(f, 0xE9, (void*)&HookFileOpen, 1);
 }
 
 HANDLE WINAPI HookGetHostByName(HWND wnd, u_int msg, const char* name, char* buf, int buflen) {
